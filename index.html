@@ -8,7 +8,45 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="app-shell">
+    <div class="app-status" id="appLoading">
+      <div class="app-status-card">
+        <div class="brand-mark">A</div>
+        <h1>Loading Arsavaya PMS</h1>
+        <p>Checking your session and workspace data.</p>
+      </div>
+    </div>
+
+    <section class="auth-screen" id="authScreen" hidden>
+      <div class="auth-panel">
+        <div class="brand auth-brand">
+          <div class="brand-mark">A</div>
+          <div>
+            <div class="brand-name">ARSAVAYA</div>
+            <div class="brand-label">PMS</div>
+          </div>
+        </div>
+        <span class="eyebrow">Workspace access</span>
+        <h1>Sign in to Arsavaya PMS</h1>
+        <p class="auth-copy">Use your workspace email and password to continue.</p>
+        <form id="loginForm" class="auth-form">
+          <label class="field"><span>Email</span><input id="loginEmail" name="email" type="email" autocomplete="email" required /></label>
+          <label class="field"><span>Password</span><input id="loginPassword" name="password" type="password" autocomplete="current-password" required /></label>
+          <p class="auth-error" id="loginError" role="alert" hidden></p>
+          <button type="submit" class="button button-primary" id="loginButton">Sign in</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="app-error-screen" id="appErrorScreen" hidden>
+      <div class="app-status-card">
+        <div class="placeholder-icon"><i data-lucide="database-zap"></i></div>
+        <h1>Workspace data could not load</h1>
+        <p id="appErrorMessage">Please try again.</p>
+        <button class="button button-primary" id="retryButton"><i data-lucide="refresh-cw"></i> Try again</button>
+      </div>
+    </section>
+
+    <div class="app-shell" id="appShell" hidden>
       <aside class="sidebar" id="sidebar">
         <div class="brand">
           <div class="brand-mark">A</div>
@@ -73,6 +111,7 @@
             <div class="profile-copy"><strong>Nyoman S.</strong><span>Manager</span></div>
             <i data-lucide="more-horizontal"></i>
           </button>
+          <button class="sign-out-button" id="signOutButton"><i data-lucide="log-out"></i><span>Sign out</span></button>
         </div>
       </aside>
 
@@ -111,6 +150,7 @@
     <div class="toast" id="toast" role="status"><i data-lucide="check-circle-2"></i><span>Done</span></div>
 
     <script src="lucide.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="app.js"></script>
   </body>
 </html>
