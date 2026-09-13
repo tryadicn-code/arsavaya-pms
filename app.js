@@ -82,46 +82,6 @@ const seedGuests = [
   { id: "guest_007", workspaceId: seedWorkspace.id, firstName: "Olivia", lastName: "Brown", email: "olivia.brown@email.com", phone: "", country: "Germany", language: "en", dateOfBirth: null, vipStatus: false, notes: "", initials: "OB", avatar: "avatar-coral", tier: "" }
 ];
 
-function cloneSeed(value) {
-  return JSON.parse(JSON.stringify(value));
-}
-
-function loadCollection(key, seedValue) {
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw !== null) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(seedValue) && Array.isArray(parsed)) return parsed;
-      if (!Array.isArray(seedValue) && parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
-    }
-  } catch {
-    // Fall back to the in-memory demo dataset when storage is unavailable.
-  }
-  const freshValue = cloneSeed(seedValue);
-  try {
-    localStorage.setItem(key, JSON.stringify(freshValue));
-  } catch {
-    // Continue with the in-memory seed.
-  }
-  return freshValue;
-}
-
-function saveCollection(key, value) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // The prototype remains usable without browser storage.
-  }
-}
-
-const workspace = loadCollection("arsavaya-workspace", seedWorkspace);
-const users = loadCollection("arsavaya-users", seedUsers);
-const owners = loadCollection("arsavaya-owners", seedOwners);
-const managementAgreements = loadCollection("arsavaya-management-agreements", seedManagementAgreements);
-const properties = loadCollection("arsavaya-properties", seedProperties);
-const units = loadCollection("arsavaya-units", seedUnits);
-let reservations = loadCollection("arsavaya-reservations", seedReservations);
-let guests = loadCollection("arsavaya-guests", seedGuests);
 const seedThreads = [
   { id: "thread_001", workspaceId: seedWorkspace.id, reservationId: "reservation_124", guestId: "guest_001", name: "John Smith", initials: "JS", avatar: "avatar-blue", channel: "Airbnb · ARSA-001", preview: "Can we arrange airport pickup for tomorrow?", time: "9:42", unread: true },
   { id: "thread_002", workspaceId: seedWorkspace.id, reservationId: "reservation_123", guestId: "guest_002", name: "Emma Carter", initials: "EC", avatar: "avatar-coral", channel: "Booking.com · ARSA-003", preview: "Thank you, everything looks beautiful.", time: "8:18", unread: true },
@@ -144,11 +104,276 @@ const seedMessages = [
   { id: "message_003", workspaceId: seedWorkspace.id, threadId: "thread_004", direction: "OUTBOUND", body: "Good morning Sophie, so happy to hear that. I have noted your floating breakfast request for 8:30am tomorrow. Our team will prepare everything by the pool.", sentAt: "2026-09-13T09:24:00", senderId: "user_nyoman", deliveryStatus: "SENT" },
   { id: "message_004", workspaceId: seedWorkspace.id, threadId: "thread_004", direction: "INBOUND", body: "That sounds perfect, thank you so much!", sentAt: "2026-09-13T09:42:00", senderId: "guest_004", deliveryStatus: "DELIVERED" }
 ];
-const threads = loadCollection("arsavaya-threads", seedThreads);
-let tasks = loadCollection("arsavaya-tasks", seedTasks);
-const blocks = loadCollection("arsavaya-blocks", []);
-const settings = loadCollection("arsavaya-settings", { workspaceId: seedWorkspace.id, language: "en", dateFormat: "dd MMM yyyy", defaultCheckInTime: "15:00", defaultCheckOutTime: "11:00" });
-const messages = loadCollection("arsavaya-messages", seedMessages);
+const workspace = {};
+const users = [];
+const owners = [];
+const managementAgreements = [];
+const properties = [];
+const units = [];
+let reservations = [];
+let guests = [];
+const threads = [];
+let tasks = [];
+const blocks = [];
+const settings = {};
+const messages = [];
+
+const SUPABASE_URL = "https://sqizbsskkdegknspqxou.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_mHHgBS3t8mbfn5AcJNz28g_afysbxPo";
+const supabaseClient = window.supabase?.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storage: window.sessionStorage }
+});
+let currentAuthUser = null;
+let currentAppUser = null;
+let isAppReady = false;
+
+const fieldMap = {
+  workspaceId: "workspace_id",
+  ownerId: "owner_id",
+  propertyId: "property_id",
+  unitId: "unit_id",
+  primaryGuestId: "primary_guest_id",
+  guestId: "guest_id",
+  threadId: "thread_id",
+  reservationId: "reservation_id",
+  authUserId: "auth_user_id",
+  checkIn: "check_in",
+  checkOut: "check_out",
+  externalReservationId: "external_reservation_id",
+  paymentStatus: "payment_status",
+  accommodationRevenue: "accommodation_revenue",
+  roomRevenue: "room_revenue",
+  cleaningFee: "cleaning_fee",
+  otaCommission: "ota_commission",
+  paymentProcessingFee: "payment_processing_fee",
+  estimatedArrivalTime: "estimated_arrival_time",
+  createdAt: "created_at",
+  updatedAt: "updated_at",
+  createdBy: "created_by",
+  dueAt: "due_at",
+  assignedTo: "assigned_to",
+  sentAt: "sent_at",
+  deliveryStatus: "delivery_status",
+  startDate: "start_date",
+  endDate: "end_date",
+  dateOfBirth: "date_of_birth",
+  vipStatus: "vip_status",
+  legalName: "legal_name",
+  ownerCode: "owner_code",
+  bankDetails: "bank_details",
+  taxInfo: "tax_info",
+  packageName: "package_name",
+  managementFeeType: "management_fee_type",
+  managementFeeValue: "management_fee_value",
+  minimumFee: "minimum_fee",
+  setupFee: "setup_fee",
+  propertyType: "property_type",
+  inventoryType: "inventory_type",
+  maxGuests: "max_guests",
+  baseRate: "base_rate",
+  checkInTime: "check_in_time",
+  checkOutTime: "check_out_time",
+  housekeepingStatus: "housekeeping_status",
+  firstName: "first_name",
+  lastName: "last_name",
+  internalNotes: "internal_notes",
+  guestNotes: "guest_notes",
+  channelId: "channel_id",
+  infants: "infants",
+  adults: "adults",
+  children: "children",
+  dateFormat: "date_format",
+  defaultCheckInTime: "default_check_in_time",
+  defaultCheckOutTime: "default_check_out_time"
+};
+
+const tableFields = {
+  workspaces: ["id", "name", "legalName", "timezone", "currency", "language", "logo", "email", "phone", "createdAt", "updatedAt"],
+  users: ["id", "workspaceId", "authUserId", "name", "email", "phone", "role", "status", "createdAt", "updatedAt"],
+  owners: ["id", "workspaceId", "ownerCode", "name", "email", "phone", "address", "bankDetails", "taxInfo", "notes", "status", "createdAt", "updatedAt"],
+  management_agreements: ["id", "workspaceId", "ownerId", "propertyId", "packageName", "startDate", "endDate", "managementFeeType", "managementFeeValue", "minimumFee", "setupFee", "status", "createdAt", "updatedAt"],
+  properties: ["id", "workspaceId", "ownerId", "code", "name", "address", "location", "propertyType", "type", "timezone", "status", "latitude", "longitude", "notes", "createdAt", "updatedAt"],
+  units: ["id", "workspaceId", "propertyId", "code", "name", "inventoryType", "bedrooms", "bathrooms", "maxGuests", "baseRate", "checkInTime", "checkOutTime", "status", "housekeepingStatus", "createdAt", "updatedAt"],
+  guests: ["id", "workspaceId", "firstName", "lastName", "email", "phone", "country", "language", "dateOfBirth", "vipStatus", "notes", "createdAt", "updatedAt"],
+  reservations: ["id", "reference", "workspaceId", "propertyId", "unitId", "primaryGuestId", "guestId", "checkIn", "checkOut", "adults", "children", "infants", "source", "channelId", "externalReservationId", "status", "paymentStatus", "accommodationRevenue", "roomRevenue", "cleaningFee", "taxes", "extras", "discounts", "otaCommission", "paymentProcessingFee", "currency", "internalNotes", "guestNotes", "estimatedArrivalTime", "createdAt", "updatedAt", "createdBy"],
+  blocks: ["id", "workspaceId", "propertyId", "unitId", "type", "startDate", "endDate", "reason", "notes", "createdBy", "createdAt", "updatedAt"],
+  tasks: ["id", "workspaceId", "propertyId", "unitId", "reservationId", "category", "title", "task", "description", "assignedTo", "dueAt", "priority", "status", "done", "createdBy", "createdAt", "updatedAt"],
+  message_threads: ["id", "workspaceId", "reservationId", "guestId", "name", "initials", "avatar", "channel", "preview", "time", "unread", "createdAt", "updatedAt"],
+  messages: ["id", "workspaceId", "threadId", "direction", "body", "sentAt", "senderId", "deliveryStatus", "createdAt", "updatedAt"],
+  settings: ["id", "workspaceId", "language", "dateFormat", "defaultCheckInTime", "defaultCheckOutTime", "createdAt", "updatedAt"]
+};
+
+const tableKeyByCollection = {
+  "arsavaya-workspace": "workspaces",
+  "arsavaya-users": "users",
+  "arsavaya-owners": "owners",
+  "arsavaya-management-agreements": "management_agreements",
+  "arsavaya-properties": "properties",
+  "arsavaya-units": "units",
+  "arsavaya-guests": "guests",
+  "arsavaya-reservations": "reservations",
+  "arsavaya-blocks": "blocks",
+  "arsavaya-tasks": "tasks",
+  "arsavaya-threads": "message_threads",
+  "arsavaya-messages": "messages",
+  "arsavaya-settings": "settings"
+};
+
+function camelToSnake(value) {
+  return value.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+}
+
+function snakeToCamel(value) {
+  return value.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+}
+
+function fromDbRecord(row) {
+  return Object.fromEntries(Object.entries(row || {}).map(([key, value]) => [snakeToCamel(key), value]));
+}
+
+function toDbRecord(table, record, { includeWorkspace = true } = {}) {
+  const fields = tableFields[table] || Object.keys(record || {});
+  const output = {};
+  fields.forEach(field => {
+    if (record?.[field] !== undefined) output[fieldMap[field] || camelToSnake(field)] = record[field];
+  });
+  if (includeWorkspace && table !== "workspaces" && table !== "users" && workspace.id) output.workspace_id = workspace.id;
+  return output;
+}
+
+function databaseError(error, context) {
+  console.error(context, error);
+  showToast(`${context}: ${error?.message || "database error"}`);
+}
+
+async function upsertRecords(collectionKey, records) {
+  const table = tableKeyByCollection[collectionKey];
+  if (!supabaseClient || !table || !Array.isArray(records) || !records.length) return;
+  const payload = records.map(record => toDbRecord(table, record));
+  const { error } = await supabaseClient.from(table).upsert(payload, { onConflict: "id" });
+  if (error) throw error;
+}
+
+async function persistCollection(collectionKey, records) {
+  if (!records?.length) return;
+  await upsertRecords(collectionKey, records);
+}
+
+async function updateRecord(table, id, record) {
+  let query = supabaseClient.from(table).update(toDbRecord(table, record)).eq("id", id);
+  if (table !== "workspaces" && table !== "users") query = query.eq("workspace_id", workspace.id);
+  const { error } = await query;
+  if (error) throw error;
+}
+
+async function deleteRecord(table, id) {
+  const { error } = await supabaseClient.from(table).delete().eq("id", id).eq("workspace_id", workspace.id);
+  if (error) throw error;
+}
+
+async function fetchWorkspaceData(workspaceId) {
+  const tableEntries = Object.entries(tableKeyByCollection).filter(([key]) => key !== "arsavaya-workspace");
+  const results = await Promise.all(tableEntries.map(async ([collectionKey, table]) => {
+    const { data, error } = await supabaseClient.from(table).select("*").eq("workspace_id", workspaceId);
+    if (error) throw new Error(`${table}: ${error.message}`);
+    return [collectionKey, (data || []).map(fromDbRecord)];
+  }));
+  return Object.fromEntries(results);
+}
+
+function replaceArray(target, values) {
+  target.splice(0, target.length, ...(values || []));
+}
+
+function rebuildDateFormatters() {
+  applicationTimeZone = workspace.timezone || "Asia/Makassar";
+  dateFormatter = new Intl.DateTimeFormat("en-GB", { timeZone: applicationTimeZone, day: "numeric", month: "short", year: "numeric" });
+  shortDateFormatter = new Intl.DateTimeFormat("en-GB", { timeZone: applicationTimeZone, day: "numeric", month: "short" });
+  applicationDateFormatter = new Intl.DateTimeFormat("en-GB", { timeZone: applicationTimeZone, weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  applicationMonthFormatter = new Intl.DateTimeFormat("en-GB", { timeZone: applicationTimeZone, month: "long", year: "numeric" });
+  reservationReferenceYear = Number(new Intl.DateTimeFormat("en-CA", { timeZone: applicationTimeZone, year: "numeric" }).format(new Date()));
+}
+
+function setStartupState(state, message = "") {
+  appLoading.hidden = state !== "loading";
+  authScreen.hidden = state !== "auth";
+  appErrorScreen.hidden = state !== "error";
+  appShell.hidden = state !== "ready";
+  if (message) appErrorMessage.textContent = message;
+  refreshIcons();
+}
+
+async function loadAuthenticatedWorkspace(session) {
+  if (!supabaseClient) throw new Error("Supabase client could not be initialized.");
+  currentAuthUser = session?.user || null;
+  if (!currentAuthUser) {
+    isAppReady = false;
+    setStartupState("auth");
+    return;
+  }
+
+  const { data: appUser, error: userError } = await supabaseClient
+    .from("users")
+    .select("*")
+    .eq("auth_user_id", currentAuthUser.id)
+    .maybeSingle();
+  if (userError) throw userError;
+  if (!appUser?.workspace_id) throw new Error("Your authenticated user is not linked to a workspace.");
+  currentAppUser = fromDbRecord(appUser);
+
+  const { data: workspaceRow, error: workspaceError } = await supabaseClient
+    .from("workspaces")
+    .select("*")
+    .eq("id", appUser.workspace_id)
+    .single();
+  if (workspaceError) throw workspaceError;
+  Object.assign(workspace, fromDbRecord(workspaceRow));
+
+  const data = await fetchWorkspaceData(workspace.id);
+  replaceArray(users, [currentAppUser, ...(data["arsavaya-users"] || []).filter(user => user.id !== currentAppUser.id)]);
+  replaceArray(owners, data["arsavaya-owners"]);
+  replaceArray(managementAgreements, data["arsavaya-management-agreements"]);
+  replaceArray(properties, data["arsavaya-properties"]);
+  replaceArray(units, data["arsavaya-units"]);
+  replaceArray(guests, data["arsavaya-guests"]);
+  replaceArray(reservations, data["arsavaya-reservations"]);
+  replaceArray(blocks, data["arsavaya-blocks"]);
+  replaceArray(tasks, data["arsavaya-tasks"]);
+  replaceArray(threads, data["arsavaya-threads"]);
+  replaceArray(messages, data["arsavaya-messages"]);
+  Object.assign(settings, (data["arsavaya-settings"] || [])[0] || {});
+  settings.workspaceId = workspace.id;
+  language = settings.language === "id" || workspace.language === "id" ? "id" : "en";
+  pendingLanguage = language;
+  rebuildDateFormatters();
+  normalizeLoadedData();
+  isAppReady = true;
+  setStartupState("ready");
+  renderPage();
+}
+
+async function initializeApplication() {
+  setStartupState("loading");
+  if (!supabaseClient) {
+    setStartupState("error", "Supabase JS could not load. Check the network connection and reload the page.");
+    return;
+  }
+  try {
+    const { data: { session }, error } = await supabaseClient.auth.getSession();
+    if (error) throw error;
+    await loadAuthenticatedWorkspace(session);
+    supabaseClient.auth.onAuthStateChange((_event, nextSession) => {
+      if (!nextSession) {
+        isAppReady = false;
+        currentAuthUser = null;
+        currentAppUser = null;
+        setStartupState("auth");
+      }
+    });
+  } catch (error) {
+    setStartupState("error", error.message || "Unable to load workspace data.");
+  }
+}
 const calendarBlockTypes = new Set(["OWNER_STAY", "MAINTENANCE", "PRIVATE_USE", "MANUAL_BLOCK", "OUT_OF_ORDER"]);
 const calendarBlockTypeLabels = {
   OWNER_STAY: "Owner stay",
@@ -235,6 +460,16 @@ const breadcrumbPage = document.getElementById("breadcrumbPage");
 const modalBackdrop = document.getElementById("modalBackdrop");
 const toast = document.getElementById("toast");
 const topbarDate = document.getElementById("topbarDate");
+const appShell = document.getElementById("appShell");
+const appLoading = document.getElementById("appLoading");
+const authScreen = document.getElementById("authScreen");
+const appErrorScreen = document.getElementById("appErrorScreen");
+const appErrorMessage = document.getElementById("appErrorMessage");
+const loginForm = document.getElementById("loginForm");
+const loginError = document.getElementById("loginError");
+const loginButton = document.getElementById("loginButton");
+const retryButton = document.getElementById("retryButton");
+const signOutButton = document.getElementById("signOutButton");
 
 const drawerBackdrop = document.createElement("div");
 drawerBackdrop.className = "drawer-backdrop";
@@ -253,11 +488,11 @@ document.body.appendChild(drawerBackdrop);
 function icon(name) { return `<i data-lucide="${name}"></i>`; }
 function avatar(initials, avatarClass = "avatar-sage") { return `<div class="avatar ${avatarClass}">${initials}</div>`; }
 const currencyFormatter = new Intl.NumberFormat("id-ID");
-const applicationTimeZone = workspace.timezone || "Asia/Makassar";
-const dateFormatter = new Intl.DateTimeFormat("en-GB", { timeZone: applicationTimeZone, day: "numeric", month: "short", year: "numeric" });
-const shortDateFormatter = new Intl.DateTimeFormat("en-GB", { timeZone: applicationTimeZone, day: "numeric", month: "short" });
-const applicationDateFormatter = new Intl.DateTimeFormat("en-GB", { timeZone: applicationTimeZone, weekday: "long", day: "numeric", month: "long", year: "numeric" });
-const applicationMonthFormatter = new Intl.DateTimeFormat("en-GB", { timeZone: applicationTimeZone, month: "long", year: "numeric" });
+let applicationTimeZone = workspace.timezone || "Asia/Makassar";
+let dateFormatter = new Intl.DateTimeFormat("en-GB", { timeZone: applicationTimeZone, day: "numeric", month: "short", year: "numeric" });
+let shortDateFormatter = new Intl.DateTimeFormat("en-GB", { timeZone: applicationTimeZone, day: "numeric", month: "short" });
+let applicationDateFormatter = new Intl.DateTimeFormat("en-GB", { timeZone: applicationTimeZone, weekday: "long", day: "numeric", month: "long", year: "numeric" });
+let applicationMonthFormatter = new Intl.DateTimeFormat("en-GB", { timeZone: applicationTimeZone, month: "long", year: "numeric" });
 const sourceLabels = { airbnb: "Airbnb", booking_com: "Booking.com", agoda: "Agoda", traveloka: "Traveloka", direct: "Direct", other: "Other" };
 const statusLabels = {
   INQUIRY: "Inquiry",
@@ -271,7 +506,7 @@ const statusLabels = {
 const statusClasses = { INQUIRY: "pending", PENDING: "pending", CONFIRMED: "confirmed", CHECKED_IN: "checked", CHECKED_OUT: "checked", CANCELLED: "cancelled", NO_SHOW: "cancelled" };
 const paymentStatusValues = new Set(["UNPAID", "PARTIAL", "PAID", "REFUNDED"]);
 const activeReservationStatuses = new Set(["INQUIRY", "PENDING", "CONFIRMED", "CHECKED_IN", "CHECKED_OUT"]);
-const reservationReferenceYear = Number(new Intl.DateTimeFormat("en-CA", { timeZone: applicationTimeZone, year: "numeric" }).format(new Date()));
+let reservationReferenceYear = Number(new Intl.DateTimeFormat("en-CA", { timeZone: applicationTimeZone, year: "numeric" }).format(new Date()));
 function normalizeStatus(value) { return String(value || "").trim().toUpperCase(); }
 function normalizePaymentStatus(value) {
   const status = normalizeStatus(value);
@@ -357,7 +592,7 @@ function normalizeLoadedData() {
     const guest = guests.find(item => item.id === reservation.primaryGuestId);
     return !property || !unit || !guest || unit.propertyId !== property.id;
   });
-  if (invalidReservations.length) saveCollection("arsavaya-invalid-reservations", invalidReservations);
+  if (invalidReservations.length) console.warn("Invalid reservations excluded from the working set", invalidReservations);
   reservations = reservations.filter(reservation => !invalidReservations.includes(reservation));
   blocks.forEach(block => {
     block.workspaceId ||= workspace.id;
@@ -375,21 +610,14 @@ function normalizeLoadedData() {
     const unit = units.find(item => item.id === block.unitId);
     return !property || !unit || unit.propertyId !== property.id || !isIsoDate(block.startDate) || !isIsoDate(block.endDate) || block.endDate <= block.startDate;
   });
-  if (invalidBlocks.length) saveCollection("arsavaya-invalid-blocks", invalidBlocks);
+  if (invalidBlocks.length) console.warn("Invalid calendar blocks excluded from the working set", invalidBlocks);
   blocks.splice(0, blocks.length, ...blocks.filter(block => !invalidBlocks.includes(block)));
   tasks.forEach(task => {
     task.workspaceId ||= workspace.id;
     task.status = normalizeStatus(task.status) || (task.done ? "COMPLETED" : "OPEN");
     task.priority = normalizeStatus(task.priority) || "MEDIUM";
   });
-  saveCollection("arsavaya-properties", properties);
-  saveCollection("arsavaya-units", units);
-  saveCollection("arsavaya-guests", guests);
-  saveCollection("arsavaya-reservations", reservations);
-  saveCollection("arsavaya-blocks", blocks);
-  saveCollection("arsavaya-tasks", tasks);
 }
-normalizeLoadedData();
 function getPropertyById(id) { return properties.find(property => property.id === id); }
 function getUnitById(id) { return units.find(unit => unit.id === id); }
 function getUnitsByPropertyId(propertyId) { return units.filter(unit => unit.propertyId === propertyId && isSellableUnit(unit)); }
@@ -491,7 +719,7 @@ function canTransitionReservation(reservation, nextStatus) {
 function findReservation(reservationId) {
   return reservations.find(reservation => reservation.id === reservationId);
 }
-function createCheckoutTasks(reservation) {
+async function createCheckoutTasks(reservation) {
   const existing = tasks.some(task => task.reservationId === reservation.id && normalizeStatus(task.category) === "HOUSEKEEPING" && normalizeStatus(task.status) !== "CANCELLED");
   if (existing) return;
   const unit = getUnitById(reservation.unitId);
@@ -517,12 +745,13 @@ function createCheckoutTasks(reservation) {
     createdAt: new Date().toISOString()
   });
   if (unit) unit.housekeepingStatus = "DIRTY";
-  saveCollection("arsavaya-tasks", tasks);
-  saveCollection("arsavaya-units", units);
+  await persistCollection("arsavaya-tasks", [tasks[tasks.length - 1]]);
+  if (unit) await updateRecord("units", unit.id, unit);
 }
-function updateReservationStatus(reservationId, nextStatus) {
+async function updateReservationStatus(reservationId, nextStatus) {
   const reservation = findReservation(reservationId);
   if (!reservation) return false;
+  const originalReservation = JSON.parse(JSON.stringify(reservation));
   const normalizedNextStatus = normalizeStatus(nextStatus);
   if (normalizedNextStatus === "CANCELLED" && !window.confirm(`Cancel reservation ${reservation.reference}?`)) return false;
   if (!isReservationIntegrityValid(reservation)) {
@@ -535,11 +764,17 @@ function updateReservationStatus(reservationId, nextStatus) {
   }
   reservation.status = normalizedNextStatus;
   reservation.updatedAt = new Date().toISOString();
-  if (normalizedNextStatus === "CHECKED_OUT") createCheckoutTasks(reservation);
-  saveCollection("arsavaya-reservations", reservations);
-  renderPage(activePage);
-  showToast(`${reservation.reference} marked ${titleCaseEnum(normalizedNextStatus)}`);
-  return true;
+  try {
+    await updateRecord("reservations", reservation.id, reservation);
+    if (normalizedNextStatus === "CHECKED_OUT") await createCheckoutTasks(reservation);
+    renderPage(activePage);
+    showToast(`${reservation.reference} marked ${titleCaseEnum(normalizedNextStatus)}`);
+    return true;
+  } catch (error) {
+    databaseError(error, "Could not update reservation");
+    Object.assign(reservation, originalReservation);
+    return false;
+  }
 }
 function sprint2IntegrityCheck() {
   const errors = [];
@@ -1048,8 +1283,21 @@ function applyLanguage() {
   document.querySelector(".operations-label").textContent = text("operations");
   breadcrumbPage.textContent = navText(activePage);
   if (topbarDate) topbarDate.textContent = applicationDateLabel();
+  const userName = currentAppUser?.name || currentAuthUser?.email || "Workspace user";
+  const userRole = titleCaseEnum(currentAppUser?.role || "USER");
+  const userInitials = userName.split(/\s+/).map(part => part[0]).join("").slice(0, 2).toUpperCase() || "U";
+  document.querySelector(".workspace-copy strong")?.replaceChildren(document.createTextNode(workspace.name || "Workspace"));
+  document.querySelector(".workspace-avatar")?.replaceChildren(document.createTextNode((workspace.name || "W").slice(0, 1).toUpperCase()));
+  document.querySelector(".profile-card .avatar")?.replaceChildren(document.createTextNode(userInitials));
+  document.querySelector(".profile-copy strong")?.replaceChildren(document.createTextNode(userName));
+  document.querySelector(".profile-copy span")?.replaceChildren(document.createTextNode(userRole));
+  document.querySelector(".topbar-user .avatar")?.replaceChildren(document.createTextNode(userInitials));
+  document.querySelector(".topbar-user-copy strong")?.replaceChildren(document.createTextNode(userName));
+  document.querySelector(".topbar-user-copy small")?.replaceChildren(document.createTextNode(userRole));
+  document.querySelector(".nav-item[data-page='inbox'] .nav-count")?.replaceChildren(document.createTextNode(String(threads.filter(thread => thread.unread).length)));
+  document.querySelector(".nav-item[data-page='tasks'] .nav-count")?.replaceChildren(document.createTextNode(String(tasks.filter(task => normalizeStatus(task.status) !== "COMPLETED").length)));
 }
-function persistLanguage(nextLanguage) {
+async function persistLanguage(nextLanguage) {
   language = nextLanguage === "id" ? "id" : "en";
   pendingLanguage = language;
   workspace.language = language;
@@ -1059,11 +1307,18 @@ function persistLanguage(nextLanguage) {
   } catch {
     // Keep the in-memory preference when browser storage is unavailable.
   }
-  saveCollection("arsavaya-workspace", workspace);
-  saveCollection("arsavaya-settings", settings);
-  applyLanguage();
-  renderPage(activePage);
-  showToast(text("saved"));
+  try {
+    await updateRecord("workspaces", workspace.id, workspace);
+    const settingsRecord = settings.id ? settings : { ...settings, id: createId("settings") };
+    settingsRecord.workspaceId = workspace.id;
+    await upsertRecords("arsavaya-settings", [settingsRecord]);
+    Object.assign(settings, settingsRecord);
+    applyLanguage();
+    renderPage(activePage);
+    showToast(text("saved"));
+  } catch (error) {
+    databaseError(error, "Could not save language preference");
+  }
 }
 function showToast(message) {
   toast.querySelector("span").textContent = message;
@@ -1440,7 +1695,7 @@ function openGuestModal() {
   document.body.style.overflow = "hidden";
   modalBackdrop.querySelector("input")?.focus();
 }
-function saveNewReservation(form, formElement = null) {
+async function saveNewReservation(form, formElement = null) {
   const guestMode = String(form.get("guestMode") || "existing");
   const propertyId = String(form.get("propertyId") || "");
   const unitId = String(form.get("unitId") || "");
@@ -1482,6 +1737,7 @@ function saveNewReservation(form, formElement = null) {
     return false;
   }
   let resolvedPrimaryGuestId = primaryGuestIdFromForm || String(form.get("duplicateGuestId") || "");
+  let createdGuest = null;
   if (guestMode === "new") {
     const firstName = String(form.get("newFirstName") || "").trim();
     const lastName = String(form.get("newLastName") || "").trim();
@@ -1504,7 +1760,7 @@ function saveNewReservation(form, formElement = null) {
     } else {
       resolvedPrimaryGuestId = createId("guest");
       const now = new Date().toISOString();
-      guests.push({
+      createdGuest = {
         id: resolvedPrimaryGuestId,
         workspaceId: workspace.id,
         firstName,
@@ -1521,7 +1777,8 @@ function saveNewReservation(form, formElement = null) {
         tier: "",
         createdAt: now,
         updatedAt: now
-      });
+      };
+      guests.push(createdGuest);
     }
   }
   if (!resolvedPrimaryGuestId || !getGuestById(resolvedPrimaryGuestId)) {
@@ -1580,20 +1837,36 @@ function saveNewReservation(form, formElement = null) {
     showToast("Reservation references are invalid");
     return false;
   }
-  reservations.unshift(newReservation);
-  saveCollection("arsavaya-reservations", reservations);
-  saveCollection("arsavaya-guests", guests);
-  closeModal();
-  showToast("Reservation created");
-  renderPage(activePage);
-  return true;
+  try {
+    if (guestMode === "new" && getGuestById(resolvedPrimaryGuestId)) {
+      await upsertRecords("arsavaya-guests", [getGuestById(resolvedPrimaryGuestId)]);
+    }
+    await upsertRecords("arsavaya-reservations", [newReservation]);
+    reservations.unshift(newReservation);
+    closeModal();
+    showToast("Reservation created");
+    renderPage(activePage);
+    return true;
+  } catch (error) {
+    databaseError(error, "Could not create reservation");
+    if (createdGuest) {
+      guests.splice(guests.findIndex(guest => guest.id === createdGuest.id), 1);
+      try {
+        await deleteRecord("guests", createdGuest.id);
+      } catch (cleanupError) {
+        console.error("Could not clean up guest after reservation failure", cleanupError);
+      }
+    }
+    return false;
+  }
 }
-function saveEditedReservation(form) {
+async function saveEditedReservation(form) {
   const reservation = findReservation(form.get("reservationId"));
   if (!reservation) {
     showToast("Reservation was not found");
     return false;
   }
+  const originalReservation = JSON.parse(JSON.stringify(reservation));
   const unitId = String(form.get("unitId") || "");
   const primaryGuestId = String(form.get("primaryGuestId") || "");
   const checkIn = String(form.get("checkin") || "");
@@ -1670,77 +1943,103 @@ function saveEditedReservation(form) {
     showToast("Reservation references are invalid");
     return false;
   }
-  if (nextStatus === "CHECKED_OUT") createCheckoutTasks(reservation);
-  saveCollection("arsavaya-reservations", reservations);
-  closeModal();
-  closeDrawer();
-  renderPage(activePage);
-  showToast(`${reservation.reference} updated`);
-  return true;
+  try {
+    await updateRecord("reservations", reservation.id, reservation);
+    if (nextStatus === "CHECKED_OUT") await createCheckoutTasks(reservation);
+    closeModal();
+    closeDrawer();
+    renderPage(activePage);
+    showToast(`${reservation.reference} updated`);
+    return true;
+  } catch (error) {
+    databaseError(error, "Could not update reservation");
+    Object.assign(reservation, originalReservation);
+    return false;
+  }
 }
-function handleEntityFormSubmit(event) {
+async function handleEntityFormSubmit(event) {
   const form = event.target;
   if (!form.matches("[data-entity-form]")) return;
   event.preventDefault();
   const data = new FormData(form);
   const entity = form.dataset.entityForm;
   if (entity === "reservation") {
-    saveNewReservation(data, form);
+    await saveNewReservation(data, form);
     return;
   }
   if (entity === "reservation-edit") {
-    saveEditedReservation(data);
+    await saveEditedReservation(data);
     return;
   }
   if (entity === "calendar-block") {
-    saveCalendarBlock(data);
+    await saveCalendarBlock(data);
     return;
   }
   const now = new Date().toISOString();
   if (entity === "owner") {
     const ownerCode = String(data.get("ownerCode") || `OWN-${String(owners.length + 1).padStart(3, "0")}`).trim();
-    owners.push({ id: createId("owner"), workspaceId: workspace.id, ownerCode, name: String(data.get("name") || "").trim(), email: String(data.get("email") || "").trim(), phone: String(data.get("phone") || "").trim(), address: String(data.get("address") || "").trim(), bankDetails: "", taxInfo: "", notes: "", status: String(data.get("status") || "ACTIVE"), createdAt: now, updatedAt: now });
-    saveCollection("arsavaya-owners", owners);
-    closeModal();
-    showToast("Owner created");
-    renderPage(activePage);
+    const owner = { id: createId("owner"), workspaceId: workspace.id, ownerCode, name: String(data.get("name") || "").trim(), email: String(data.get("email") || "").trim(), phone: String(data.get("phone") || "").trim(), address: String(data.get("address") || "").trim(), bankDetails: "", taxInfo: "", notes: "", status: String(data.get("status") || "ACTIVE"), createdAt: now, updatedAt: now };
+    try {
+      await upsertRecords("arsavaya-owners", [owner]);
+      owners.push(owner);
+      closeModal();
+      showToast("Owner created");
+      renderPage(activePage);
+    } catch (error) {
+      databaseError(error, "Could not create owner");
+    }
     return;
   }
   if (entity === "property") {
     const propertyId = createId("property");
     const propertyType = String(data.get("propertyType") || "STANDALONE");
     const propertyName = String(data.get("name") || "").trim();
-    properties.push({ id: propertyId, workspaceId: workspace.id, ownerId: String(data.get("ownerId") || ""), code: String(data.get("code") || "").trim(), name: propertyName, address: String(data.get("location") || "").trim(), location: String(data.get("location") || "").trim(), propertyType, type: propertyType === "COMPLEX" ? "complex" : "standalone", timezone: workspace.timezone, status: "ACTIVE", latitude: null, longitude: null, notes: "", image: propertyImageData(propertyName || "New property"), next: "New property" });
+    const property = { id: propertyId, workspaceId: workspace.id, ownerId: String(data.get("ownerId") || ""), code: String(data.get("code") || "").trim(), name: propertyName, address: String(data.get("location") || "").trim(), location: String(data.get("location") || "").trim(), propertyType, type: propertyType === "COMPLEX" ? "complex" : "standalone", timezone: workspace.timezone, status: "ACTIVE", latitude: null, longitude: null, notes: "", image: propertyImageData(propertyName || "New property"), next: "New property", createdAt: now, updatedAt: now };
     const unitId = createId("unit");
-    units.push({ id: unitId, workspaceId: workspace.id, propertyId, code: propertyType === "COMPLEX" ? "UNIT-01" : "ENTIRE-VILLA", name: String(data.get("unitName") || "Entire Villa").trim(), inventoryType: propertyType === "COMPLEX" ? "PRIVATE_UNIT" : "ENTIRE_VILLA", bedrooms: 1, bathrooms: 1, maxGuests: 2, baseRate: 0, checkInTime: settings.defaultCheckInTime, checkOutTime: settings.defaultCheckOutTime, status: "ACTIVE", housekeepingStatus: "READY" });
-    saveCollection("arsavaya-properties", properties);
-    saveCollection("arsavaya-units", units);
-    closeModal();
-    showToast("Property and first unit created");
-    renderPage(activePage);
+    const unit = { id: unitId, workspaceId: workspace.id, propertyId, code: propertyType === "COMPLEX" ? "UNIT-01" : "ENTIRE-VILLA", name: String(data.get("unitName") || "Entire Villa").trim(), inventoryType: propertyType === "COMPLEX" ? "PRIVATE_UNIT" : "ENTIRE_VILLA", bedrooms: 1, bathrooms: 1, maxGuests: 2, baseRate: 0, checkInTime: settings.defaultCheckInTime, checkOutTime: settings.defaultCheckOutTime, status: "ACTIVE", housekeepingStatus: "READY", createdAt: now, updatedAt: now };
+    try {
+      await upsertRecords("arsavaya-properties", [property]);
+      await upsertRecords("arsavaya-units", [unit]);
+      properties.push(property);
+      units.push(unit);
+      closeModal();
+      showToast("Property and first unit created");
+      renderPage(activePage);
+    } catch (error) {
+      databaseError(error, "Could not create property");
+    }
     return;
   }
   if (entity === "unit") {
     const propertyId = String(data.get("propertyId") || "");
-    units.push({ id: createId("unit"), workspaceId: workspace.id, propertyId, code: String(data.get("code") || "").trim(), name: String(data.get("name") || "").trim(), inventoryType: "PRIVATE_UNIT", bedrooms: Math.max(0, Number(data.get("bedrooms") || 0)), bathrooms: 1, maxGuests: Math.max(1, Number(data.get("maxGuests") || 2)), baseRate: Math.max(0, Number(data.get("baseRate") || 0)), checkInTime: settings.defaultCheckInTime, checkOutTime: settings.defaultCheckOutTime, status: String(data.get("status") || "ACTIVE"), housekeepingStatus: "READY" });
-    saveCollection("arsavaya-units", units);
-    closeModal();
-    showToast("Unit created");
-    renderPage(activePage);
+    const unit = { id: createId("unit"), workspaceId: workspace.id, propertyId, code: String(data.get("code") || "").trim(), name: String(data.get("name") || "").trim(), inventoryType: "PRIVATE_UNIT", bedrooms: Math.max(0, Number(data.get("bedrooms") || 0)), bathrooms: 1, maxGuests: Math.max(1, Number(data.get("maxGuests") || 2)), baseRate: Math.max(0, Number(data.get("baseRate") || 0)), checkInTime: settings.defaultCheckInTime, checkOutTime: settings.defaultCheckOutTime, status: String(data.get("status") || "ACTIVE"), housekeepingStatus: "READY", createdAt: now, updatedAt: now };
+    try {
+      await upsertRecords("arsavaya-units", [unit]);
+      units.push(unit);
+      closeModal();
+      showToast("Unit created");
+      renderPage(activePage);
+    } catch (error) {
+      databaseError(error, "Could not create unit");
+    }
     return;
   }
   if (entity === "guest") {
     const firstName = String(data.get("firstName") || "").trim();
     const lastName = String(data.get("lastName") || "").trim();
-    const guest = { id: createId("guest"), workspaceId: workspace.id, firstName, lastName, email: String(data.get("email") || "").trim(), phone: String(data.get("phone") || "").trim(), country: String(data.get("country") || "").trim(), language: String(data.get("language") || "en"), dateOfBirth: null, vipStatus: false, notes: "", initials: `${firstName[0] || ""}${lastName[0] || ""}`.toUpperCase(), avatar: "avatar-sage", tier: "" };
-    guests.push(guest);
-    saveCollection("arsavaya-guests", guests);
-    closeModal();
-    showToast("Guest created");
-    renderPage(activePage);
+    const guest = { id: createId("guest"), workspaceId: workspace.id, firstName, lastName, email: String(data.get("email") || "").trim(), phone: String(data.get("phone") || "").trim(), country: String(data.get("country") || "").trim(), language: String(data.get("language") || "en"), dateOfBirth: null, vipStatus: false, notes: "", initials: `${firstName[0] || ""}${lastName[0] || ""}`.toUpperCase(), avatar: "avatar-sage", tier: "", createdAt: now, updatedAt: now };
+    try {
+      await upsertRecords("arsavaya-guests", [guest]);
+      guests.push(guest);
+      closeModal();
+      showToast("Guest created");
+      renderPage(activePage);
+    } catch (error) {
+      databaseError(error, "Could not create guest");
+    }
   }
 }
-function saveCalendarBlock(form) {
+async function saveCalendarBlock(form) {
   const propertyId = String(form.get("propertyId") || "");
   const unitId = String(form.get("unitId") || "");
   const type = normalizeStatus(form.get("type"));
@@ -1768,7 +2067,7 @@ function saveCalendarBlock(form) {
     return false;
   }
   const now = new Date().toISOString();
-  blocks.push({
+  const block = {
     id: createId("block"),
     workspaceId: workspace.id,
     propertyId,
@@ -1780,26 +2079,37 @@ function saveCalendarBlock(form) {
     notes: String(form.get("notes") || "").trim(),
     createdBy: users[0]?.id || null,
     createdAt: now
-  });
-  saveCollection("arsavaya-blocks", blocks);
-  closeModal();
-  renderPage("calendar");
-  showToast("Calendar block created");
-  return true;
+  };
+  try {
+    await upsertRecords("arsavaya-blocks", [block]);
+    blocks.push(block);
+    closeModal();
+    renderPage("calendar");
+    showToast("Calendar block created");
+    return true;
+  } catch (error) {
+    databaseError(error, "Could not create calendar block");
+    return false;
+  }
 }
-function removeCalendarBlock(blockId) {
+async function removeCalendarBlock(blockId) {
   const index = blocks.findIndex(block => block.id === blockId);
   if (index < 0) return false;
   const block = blocks[index];
   if (!window.confirm(`Remove ${calendarBlockTypeLabels[normalizeStatus(block.type)] || "calendar block"} for ${formatLongDate(block.startDate)} to ${formatLongDate(block.endDate)}?`)) return false;
-  blocks.splice(index, 1);
-  saveCollection("arsavaya-blocks", blocks);
-  closeDrawer();
-  renderPage("calendar");
-  showToast("Calendar block removed");
-  return true;
+  try {
+    await deleteRecord("blocks", block.id);
+    blocks.splice(index, 1);
+    closeDrawer();
+    renderPage("calendar");
+    showToast("Calendar block removed");
+    return true;
+  } catch (error) {
+    databaseError(error, "Could not remove calendar block");
+    return false;
+  }
 }
-function handleMessageSubmit(event) {
+async function handleMessageSubmit(event) {
   const form = event.target;
   if (form.id !== "messageForm") return;
   event.preventDefault();
@@ -1808,7 +2118,7 @@ function handleMessageSubmit(event) {
   if (!body) return;
   const thread = threads[activeThread];
   if (!thread) return;
-  messages.push({
+  const message = {
     id: createId("message"),
     workspaceId: workspace.id,
     threadId: thread.id,
@@ -1817,14 +2127,19 @@ function handleMessageSubmit(event) {
     sentAt: new Date().toISOString(),
     senderId: users[0]?.id || null,
     deliveryStatus: "SENT"
-  });
+  };
   thread.preview = body;
   thread.time = "Now";
   thread.unread = false;
-  saveCollection("arsavaya-messages", messages);
-  saveCollection("arsavaya-threads", threads);
-  renderPage("inbox");
-  showToast("Reply sent to " + thread.name);
+  try {
+    await upsertRecords("arsavaya-messages", [message]);
+    await updateRecord("message_threads", thread.id, thread);
+    messages.push(message);
+    renderPage("inbox");
+    showToast("Reply sent to " + thread.name);
+  } catch (error) {
+    databaseError(error, "Could not send message");
+  }
 }
 
 function renderDashboard() {
@@ -1992,7 +2307,10 @@ function renderCalendar() {
 }
 
 function renderInbox() {
-  const selected = threads[activeThread];
+  const selected = threads[activeThread] || threads[0] || null;
+  if (!selected) {
+    return `${pageHeading(pageMeta.inbox, "Inbox", "Keep every guest conversation warm, timely, and connected to the stay.", `<button class="button button-primary" data-action="new-message">${icon("pencil")} New message</button>`)}<article class="surface inbox-layout"><div class="empty-state inbox-empty">No conversations in this workspace.</div></article>`;
+  }
   const visibleThreads = threads.filter(thread => inboxFilter === "all" || (inboxFilter === "unread" && thread.unread) || inboxFilter === "assigned");
   const threadRows = visibleThreads.map(thread => {
     const index = threads.indexOf(thread);
@@ -2215,12 +2533,20 @@ function bindPageActions() {
     event.stopPropagation();
     const item = tasks.find(task => task.id === input.dataset.taskToggle);
     if (!item) return;
+    const previous = { done: item.done, status: item.status, statusClass: item.statusClass };
     item.done = input.checked;
     item.status = input.checked ? "COMPLETED" : "OPEN";
     item.statusClass = input.checked ? "confirmed" : "checked";
-    saveCollection("arsavaya-tasks", tasks);
-    showToast(`${item.task} marked ${item.status.toLowerCase()}`);
-    renderPage("tasks");
+    updateRecord("tasks", item.id, item)
+      .then(() => {
+        showToast(`${item.task} marked ${item.status.toLowerCase()}`);
+        renderPage("tasks");
+      })
+      .catch(error => {
+        Object.assign(item, previous);
+        databaseError(error, "Could not update task");
+        renderPage("tasks");
+      });
   }));
   pageContent.querySelectorAll("[data-task]").forEach(row => row.addEventListener("click", event => {
     if (event.target.closest("button") || event.target.closest("input")) return;
@@ -2313,11 +2639,6 @@ function bindPageActions() {
     showToast(input.value === "id" ? languageCopy.id.indonesianApplied : languageCopy.en.englishApplied);
   }));
   pageContent.querySelectorAll("[data-save-language]").forEach(button => button.addEventListener("click", () => persistLanguage(pendingLanguage)));
-  const sendMessage = document.getElementById("sendMessage");
-  if (sendMessage) sendMessage.addEventListener("click", () => {
-    const input = document.getElementById("messageInput");
-    if (input.value.trim()) { showToast("Reply sent to " + threads[activeThread].name); input.value = ""; }
-  });
 }
 
 drawerBackdrop.addEventListener("click", event => {
@@ -2362,6 +2683,7 @@ modalBackdrop.addEventListener("click", event => {
   if (event.target === modalBackdrop || event.target.closest(".close-modal")) closeModal();
 });
 modalBackdrop.addEventListener("submit", handleEntityFormSubmit);
+document.addEventListener("submit", handleMessageSubmit);
 document.getElementById("notificationButton").addEventListener("click", () => showToast("You have 3 urgent conversations to review"));
 document.getElementById("mobileMenu").addEventListener("click", () => document.getElementById("sidebar").classList.toggle("open"));
 document.getElementById("openSearch").addEventListener("click", () => document.getElementById("searchWrap").classList.toggle("visible"));
@@ -2381,4 +2703,34 @@ document.getElementById("pageContent").addEventListener("click", event => {
 });
 document.addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); document.getElementById("globalSearch").focus(); document.getElementById("searchWrap").classList.add("visible"); } if (event.key === "Escape") closeModal(); });
 
-renderPage();
+loginForm?.addEventListener("submit", async event => {
+  event.preventDefault();
+  if (!supabaseClient) return;
+  loginError.hidden = true;
+  loginButton.disabled = true;
+  loginButton.textContent = "Signing in...";
+  const email = String(new FormData(loginForm).get("email") || "").trim();
+  const password = String(new FormData(loginForm).get("password") || "");
+  const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+  loginButton.disabled = false;
+  loginButton.textContent = "Sign in";
+  if (error) {
+    loginError.textContent = error.message || "Unable to sign in.";
+    loginError.hidden = false;
+    return;
+  }
+  try {
+    setStartupState("loading");
+    await loadAuthenticatedWorkspace(data.session);
+  } catch (loadError) {
+    setStartupState("error", loadError.message || "Unable to load workspace data.");
+  }
+});
+
+retryButton?.addEventListener("click", () => initializeApplication());
+signOutButton?.addEventListener("click", async () => {
+  const { error } = await supabaseClient.auth.signOut();
+  if (error) databaseError(error, "Could not sign out");
+});
+
+initializeApplication();
