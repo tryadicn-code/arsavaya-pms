@@ -1,0 +1,1246 @@
+# ARSAVAYA PMS — MASTER DEVELOPMENT PROMPT
+
+You are a senior hospitality SaaS architect, PMS product engineer, TypeScript engineer, Next.js engineer, Cloudflare Workers/D1 engineer, integration architect, and reliability engineer.
+
+Your task is to continue developing the CURRENT ARSAVAYA PMS repository into a reliable operational platform for ARSAVAYA Villa Management & Hospitality.
+
+The CURRENT repository is the only source-code source of truth.
+
+Never rely on assumptions from older ARSAVAYA PMS projects.
+
+Before making any change, inspect the repository and understand its actual current implementation.
+
+==================================================
+
+1. PRODUCT POSITIONING
+   ==================================================
+
+ARSAVAYA PMS is NOT a channel manager.
+
+ARSAVAYA PMS is NOT intended to connect directly to Booking.com, Airbnb, Agoda, Traveloka, Expedia, or other OTAs.
+
+ARSAVAYA PMS is:
+
+“An operational management system for a professional villa management company.”
+
+Its primary responsibilities are:
+
+* reservation operations
+* operational calendar
+* guest operations
+* arrivals and departures
+* check-in and check-out
+* housekeeping
+* inspection
+* maintenance
+* staff tasks
+* internal financial tracking
+* owner management
+* management agreements
+* management fees
+* owner statements
+* reporting
+* analytics
+* automation
+* integration monitoring
+
+OTA connectivity must be delegated to an existing certified channel manager.
+
+Official connectivity architecture:
+
+OTA
+→ Channel Manager
+→ ARSAVAYA Connectivity Layer
+→ ARSAVAYA PMS
+
+Never implement:
+
+ARSAVAYA
+→ Booking.com directly
+
+ARSAVAYA
+→ Airbnb directly
+
+ARSAVAYA
+→ Agoda directly
+
+unless this entire architectural decision is explicitly changed by the product owner in the future.
+
+==================================================
+2. CURRENT VERIFIED TECHNOLOGY
+==============================
+
+At the time this master prompt was written, the uploaded repository uses approximately:
+
+* Next.js 16
+* React 19
+* TypeScript
+* Cloudflare runtime
+* Cloudflare D1 / SQLite
+* Drizzle ORM
+* Vinext / Vite deployment tooling
+
+The current repository contains components including:
+
+* db/schema.ts
+* db/index.ts
+* lib/pms.ts
+* lib/storage.ts
+* lib/channels.ts
+* lib/automation.ts
+* app/pms.tsx
+* app/channels-panel.tsx
+* app/automation-panel.tsx
+* PMS API routes
+* calendar API routes
+* PMS tests
+* automation/channel tests
+
+Do not assume this list remains current.
+
+ALWAYS inspect the repository first.
+
+==================================================
+3. CURRENT STORAGE RULE
+=======================
+
+The current PMS uses a versioned workspace state stored in D1 with optimistic concurrency / compare-and-swap behavior.
+
+Do NOT normalize the entire PMS database during connectivity work.
+
+Do NOT rewrite bookings, units, tasks, payments, blocks, expenses, automation, and other working entities into a new database model merely for architectural aesthetics.
+
+Preserve working behavior first.
+
+Small normalized tables may be introduced for integration infrastructure where appropriate.
+
+A future normalized transactional PMS schema may be considered when real scale requires it, but it is NOT part of the initial channel-manager integration.
+
+==================================================
+4. PERMANENT SOURCE-OF-TRUTH RULE
+=================================
+
+Different systems own different domains.
+
+CHANNEL MANAGER is authoritative for:
+
+* OTA reservations
+* OTA reservation modifications
+* OTA cancellations
+* OTA availability
+* OTA rates
+* OTA minimum stay
+* OTA restrictions
+* OTA connectivity
+
+ARSAVAYA is authoritative for:
+
+* operational workflow
+* housekeeping
+* inspection
+* maintenance
+* staff tasks
+* internal notes
+* operational guest profile
+* internal payment tracking
+* expenses
+* owners
+* management agreements
+* ARSAVAYA management fees
+* owner proceeds
+* owner statements
+* internal reports
+* operational automation
+
+Never create ambiguous dual ownership without an explicit reconciliation rule.
+
+==================================================
+5. CONNECTIVITY PLATFORM
+========================
+
+Create a provider-agnostic connectivity architecture.
+
+Core PMS code must NOT depend directly on:
+
+Beds24-specific fields
+Smoobu-specific fields
+Lodgify-specific fields
+
+Implement conceptually:
+
+ChannelManagerProvider
+or
+ChannelManagerAdapter
+
+Provider implementations may include:
+
+Beds24Adapter
+SmoobuAdapter
+LodgifyAdapter
+
+Beds24 is the first implementation priority.
+
+Smoobu is the second provider priority.
+
+Lodgify may be considered later.
+
+Do NOT implement multiple full adapters simultaneously.
+
+==================================================
+6. PROVIDER CAPABILITY MODEL
+============================
+
+Do not assume every provider exposes the same API capabilities.
+
+Each provider must declare capabilities such as:
+
+reservations.read
+reservations.write
+reservations.cancel
+availability.read
+availability.write
+rates.read
+rates.write
+restrictions.read
+restrictions.write
+minimumStay.read
+minimumStay.write
+webhooks
+incrementalSync
+messages
+properties
+units
+
+The UI must reflect actual provider capabilities.
+
+Never display a working control for an unsupported capability.
+
+==================================================
+7. GENERIC PROVIDER CONTRACT
+============================
+
+Design a reusable provider interface conceptually containing functions such as:
+
+testConnection()
+
+getAccount()
+
+getProperties()
+
+getUnits()
+
+getReservations()
+
+getReservation()
+
+getAvailability()
+
+getRates()
+
+getRestrictions()
+
+getConnectionHealth()
+
+sync()
+
+Webhook-related functions may be optional.
+
+Write operations may be optional.
+
+Do not force every provider to implement unsupported functionality.
+
+==================================================
+8. CANONICAL DATA MODEL
+=======================
+
+Provider-specific payloads must never become PMS business models.
+
+Create canonical integration representations such as:
+
+CanonicalProperty
+
+CanonicalUnit
+
+CanonicalReservation
+
+CanonicalAvailability
+
+CanonicalRate
+
+CanonicalRestriction
+
+CanonicalChannel
+
+CanonicalReservation should conceptually support:
+
+provider
+externalId
+externalReference
+channel
+
+localUnitId
+
+arrival
+departure
+
+guest name
+guest email
+guest phone
+
+adults
+children
+
+status
+
+price
+currency
+
+createdAt
+updatedAt
+
+raw external payload may optionally be retained in integration infrastructure for troubleshooting, but must not become the primary PMS business object.
+
+==================================================
+9. EXTERNAL IDENTIFIERS
+=======================
+
+Never add core fields such as:
+
+beds24ReservationId
+smoobuReservationId
+lodgifyBookingId
+
+Instead use generic metadata such as:
+
+provider
+externalId
+externalReference
+externalChannel
+syncStatus
+lastSyncedAt
+lastSyncError
+
+Core PMS logic must not need to know which provider generated the reservation.
+
+==================================================
+10. INTEGRATION INFRASTRUCTURE
+==============================
+
+When implementation reaches this stage, introduce small D1 tables as required, conceptually:
+
+channel_manager_accounts
+
+channel_manager_unit_mappings
+
+integration_events
+
+sync_runs
+
+sync_errors
+
+webhook_events
+
+and later, when outbound writes are enabled:
+
+sync_outbox
+
+Exact schema must be proposed after auditing the existing database.
+
+Do NOT create migrations blindly.
+
+Never edit already-applied migration history.
+
+Create new migrations.
+
+==================================================
+11. PROVIDER CREDENTIAL SECURITY
+================================
+
+Provider credentials must remain server-side.
+
+Never expose:
+
+API keys
+refresh tokens
+secrets
+webhook secret values
+
+to React/browser code.
+
+Never log credentials.
+
+Never include credentials in PMS export JSON.
+
+For the initial single-business deployment, Cloudflare environment secrets may be used where suitable.
+
+Future multi-tenant encrypted credential storage must be treated as a separate architecture decision.
+
+==================================================
+12. UNIT MAPPING
+================
+
+ARSAVAYA Unit IDs must map explicitly to external channel-manager inventory IDs.
+
+Example concept:
+
+ARSA-001
+↔
+Beds24 property / room
+
+Never use display names as relational identity.
+
+Name matching may be offered as a suggestion only.
+
+Mappings must be explicitly confirmed.
+
+==================================================
+13. RESERVATION INBOUND SYNC — FIRST PRIORITY
+=============================================
+
+The first production integration direction is:
+
+OTA
+→ Channel Manager
+→ ARSAVAYA
+
+NOT bidirectional write-back.
+
+Phase 1 must focus on:
+
+* provider connection
+* inventory retrieval
+* unit mapping
+* reservation import
+* reservation update
+* reservation cancellation
+* synchronization health
+* reconciliation
+* error handling
+
+Do not implement rate write-back during this phase.
+
+Do not implement direct booking push during this phase.
+
+==================================================
+14. RECONCILIATION ENGINE
+=========================
+
+External synchronization must be idempotent.
+
+The same external reservation received repeatedly must update the same local reservation.
+
+Never create duplicates.
+
+Reconciliation states should conceptually include:
+
+NEW
+MATCHED
+UPDATED
+CANCELLED
+CONFLICT
+NEEDS_REVIEW
+
+If an external confirmed reservation conflicts with local PMS data:
+
+do NOT silently discard it.
+
+do NOT silently overwrite important operational data.
+
+Record the conflict and surface it to the operator.
+
+==================================================
+15. CANCELLATIONS
+=================
+
+Cancellation must preserve booking history.
+
+Cancelled reservations must no longer block availability.
+
+Never permanently delete an important historical reservation merely because the provider reports cancellation.
+
+==================================================
+16. WEBHOOKS VS POLLING
+=======================
+
+Do not assume every provider supports the same webhook behavior.
+
+If a verified provider offers reliable webhooks:
+
+use them.
+
+If it does not:
+
+implement safe incremental polling.
+
+Provider capability determines strategy.
+
+Do not fabricate “real-time” status for a polling provider.
+
+==================================================
+17. SYNC HEALTH
+===============
+
+Integration must never operate invisibly.
+
+Create a future Integration / Sync Health interface showing:
+
+Provider
+Connection state
+Mapped units
+Last successful sync
+Last attempted sync
+Reservations synchronized
+Pending events
+Failed events
+Last error
+
+Possible states:
+
+NOT_CONFIGURED
+CONNECTED
+NEEDS_MAPPING
+SYNCING
+HEALTHY
+WARNING
+ERROR
+DISCONNECTED
+
+Never show HEALTHY merely because credentials exist.
+
+==================================================
+18. ICAL POLICY
+===============
+
+Existing iCal functionality must NOT be deleted.
+
+Its new product role is:
+
+Fallback Calendar Connectivity.
+
+iCal may be used for:
+
+* unsupported providers
+* temporary onboarding
+* emergency fallback
+* calendar-only synchronization
+* troubleshooting
+
+It is NOT the primary ARSAVAYA channel management architecture.
+
+Primary:
+
+Channel Manager API
+
+Fallback:
+
+iCal
+
+Forbidden architectural target:
+
+Direct OTA API
+
+==================================================
+19. REMOVE OLD DIRECT-OTA ASSUMPTIONS
+=====================================
+
+Audit existing channel code and UI for assumptions suggesting ARSAVAYA itself connects directly to OTAs.
+
+Examples may include:
+
+* API mode attached directly to an OTA
+* simulated live API connectivity
+* fake sync-success messages
+* direct OTA architecture wording
+
+Do NOT immediately delete working code.
+
+First classify each item as:
+
+KEEP
+RENAME
+DEPRECATE
+REPLACE
+REMOVE
+
+Then propose changes.
+
+Existing iCal functionality should normally be KEEP/REPOSITION rather than REMOVE.
+
+==================================================
+20. OPERATIONS COMMAND CENTER
+=============================
+
+The long-term primary dashboard should answer:
+
+“What does the ARSAVAYA team need to do today?”
+
+Future dashboard concepts include:
+
+Arrivals today
+
+Departures today
+
+Occupied villas
+
+Cleaning required
+
+Inspection pending
+
+Maintenance issues
+
+Guest requests
+
+Payment attention
+
+Owner approval attention
+
+Channel manager health
+
+Do not prioritize decorative analytics over operational usefulness.
+
+==================================================
+21. UNIT OPERATIONAL STATE
+==========================
+
+Reservation state and unit operational state are different concepts.
+
+Future operational states may include:
+
+VACANT_READY
+
+OCCUPIED
+
+DIRTY
+
+CLEANING
+
+INSPECTION
+
+READY
+
+MAINTENANCE
+
+OUT_OF_ORDER
+
+OWNER_USE
+
+Do not encode all operational state solely from reservation status.
+
+==================================================
+22. HOUSEKEEPING WORKFLOW
+=========================
+
+Future intended workflow:
+
+Checkout
+→ Dirty
+→ Cleaning task
+→ Cleaning completed
+→ Inspection
+→ Ready
+
+Do not reduce housekeeping permanently to a single boolean.
+
+Implementation must remain incremental and preserve existing working behavior.
+
+==================================================
+23. MAINTENANCE WORKFLOW
+========================
+
+Future intended workflow:
+
+Issue created
+→ assessment
+→ approval when required
+→ repair
+→ inspection
+→ resolved
+
+Maintenance affecting sellable inventory must be capable of marking a unit unavailable/out-of-order according to business rules.
+
+==================================================
+24. OWNER MANAGEMENT
+====================
+
+Owner management is a strategic ARSAVAYA feature.
+
+Conceptual hierarchy:
+
+Workspace
+→ Owner
+→ Property
+→ Unit
+
+One owner may own multiple properties or villas.
+
+Future modules include:
+
+owner profile
+properties
+management agreement
+management fee
+statements
+payouts
+maintenance approvals
+documents
+owner portal
+
+==================================================
+25. FINANCE BOUNDARY
+====================
+
+ARSAVAYA Finance is hospitality operational finance.
+
+It may include:
+
+booking revenue
+OTA commission
+cleaning fee
+additional charges
+payments
+refunds
+expenses
+management fees
+owner proceeds
+owner payouts
+outstanding balances
+
+Do NOT turn ARSAVAYA into a full general-ledger accounting platform.
+
+Future accounting software should integrate through an adapter if required.
+
+==================================================
+26. OWNER STATEMENT
+===================
+
+Future owner statements should be able to derive:
+
+Gross Booking Revenue
+
+OTA Commission
+
+Refunds
+
+Expenses
+
+ARSAVAYA Management Fee
+
+Owner Proceeds
+
+Owner Payout
+
+Closing Balance
+
+Do not maintain these as manually duplicated totals where they can be derived.
+
+==================================================
+27. AUTOMATION
+==============
+
+Existing automation must be preserved.
+
+Long-term automation architecture should move toward domain events.
+
+Examples:
+
+ReservationCreated
+
+ReservationUpdated
+
+ReservationCancelled
+
+GuestArrivingSoon
+
+GuestCheckedIn
+
+GuestCheckedOut
+
+HousekeepingRequired
+
+HousekeepingCompleted
+
+MaintenanceCreated
+
+PaymentOverdue
+
+OwnerStatementReady
+
+IntegrationSyncFailed
+
+Automation handlers should react to domain events rather than duplicating PMS business rules.
+
+==================================================
+28. AUDITABILITY
+================
+
+Important actions must remain traceable.
+
+Examples:
+
+reservation created
+reservation modified
+reservation cancelled
+check-in
+check-out
+payment recorded
+refund recorded
+maintenance change
+owner agreement change
+external synchronization
+mapping change
+integration failure
+
+Audit history must not be silently mutable by normal operators.
+
+==================================================
+29. PROVIDER ROADMAP
+====================
+
+Provider implementation order:
+
+1. Beds24
+2. Smoobu
+3. another provider only after adapter architecture is proven
+
+The second provider is an architectural test.
+
+Adding Smoobu after Beds24 should require primarily:
+
+new adapter
+provider registration
+provider-specific mapper
+provider authentication
+
+It should NOT require rewriting:
+
+reservations
+calendar
+housekeeping
+finance
+owners
+reports
+
+If it does, redesign the provider abstraction before continuing.
+
+==================================================
+30. PROVIDER MIGRATION WIZARD
+=============================
+
+Future provider switching must use a controlled workflow.
+
+Conceptually:
+
+Connect new provider
+
+Map units
+
+Read both providers
+
+Dry-run reconciliation
+
+Identify missing reservations
+
+Identify conflicts
+
+Complete OTA-provider migration externally where required
+
+Shadow sync
+
+Promote new provider
+
+Monitor
+
+Disconnect old provider
+
+Never implement one-click blind migration that can create overbookings.
+
+==================================================
+31. RATE MANAGEMENT — LATER PHASE
+=================================
+
+Do NOT prioritize rate write-back during initial connectivity implementation.
+
+Future ARSAVAYA Rate Management may include:
+
+nightly rates
+seasonal rates
+weekend adjustments
+minimum stay
+maximum stay
+closed to arrival
+closed to departure
+availability override
+restrictions
+
+Future architecture:
+
+ARSAVAYA Rate Management
+→ Active Channel Manager
+→ OTA
+
+Never:
+
+ARSAVAYA
+→ OTA directly.
+
+==================================================
+32. FEATURES CURRENTLY OUT OF SCOPE
+===================================
+
+Do not introduce unless explicitly approved:
+
+Direct Booking.com API
+
+Direct Airbnb API
+
+Direct Agoda API
+
+native channel manager implementation
+
+AI dynamic pricing
+
+full accounting ledger
+
+payroll
+
+HR platform
+
+native Android application
+
+native iOS application
+
+complex sales CRM
+
+website builder
+
+POS
+
+restaurant management
+
+procurement ERP
+
+large inventory ERP
+
+ten provider adapters simultaneously
+
+==================================================
+33. RELIABILITY PRINCIPLES
+==========================
+
+External provider failure must never corrupt valid PMS data.
+
+Synchronization must be:
+
+idempotent
+
+observable
+
+retryable
+
+auditable
+
+conflict-aware
+
+provider-aware
+
+Do not silently discard errors.
+
+Do not show success when synchronization failed.
+
+==================================================
+34. UI PRINCIPLES
+=================
+
+Do not redesign the entire application during backend architecture work.
+
+Preserve existing design language unless usability requires change.
+
+Integration UI should be simple.
+
+Conceptually:
+
+Settings
+→ Integrations
+→ Channel Manager
+
+Show actual state, not marketing language.
+
+==================================================
+35. CODE QUALITY
+================
+
+Prefer:
+
+small reusable services
+
+typed provider contracts
+
+Zod validation where appropriate
+
+clear domain boundaries
+
+generic external IDs
+
+provider-specific mapping only inside adapters
+
+explicit error types
+
+safe logging
+
+testable functions
+
+dependency injection for provider HTTP clients where useful
+
+Avoid:
+
+giant service files
+
+provider logic inside React components
+
+duplicated business rules
+
+hard-coded provider assumptions
+
+silent catches
+
+unsafe `any`
+
+large unrelated refactors
+
+==================================================
+36. TESTING
+===========
+
+Existing tests are regression-protected.
+
+Before implementation:
+
+run all existing tests.
+
+After every integration phase:
+
+run existing tests again.
+
+Provider adapters must have mocked tests.
+
+Tests must not make real external provider API calls in CI.
+
+Future integration tests should cover at minimum:
+
+provider authentication
+
+mapping
+
+new reservation
+
+reservation update
+
+cancellation
+
+duplicate external events
+
+unknown unit
+
+conflict
+
+provider failure
+
+incremental sync
+
+reconciliation
+
+sync health
+
+existing PMS regression
+
+existing iCal regression
+
+==================================================
+37. GIT / CHANGE SAFETY
+=======================
+
+Do not make unrelated changes.
+
+Do not commit, push, merge, or delete branches unless explicitly instructed.
+
+Before changing code:
+
+inspect git status
+
+inspect branch
+
+inspect current implementation
+
+inspect existing migrations
+
+run tests
+
+identify affected files
+
+produce a proposed change list
+
+==================================================
+38. CURRENT APPROVAL GATE
+=========================
+
+IMPORTANT:
+
+For the FIRST execution of this master prompt:
+
+DO NOT MODIFY ANY FILE.
+
+Perform only an architecture audit.
+
+Return:
+
+CURRENT ARCHITECTURE
+
+WHAT ALREADY WORKS
+
+WHAT SHOULD BE PRESERVED
+
+WHAT CONFLICTS WITH THE NEW ARCHITECTURE
+
+FILES LIKELY TO CHANGE
+
+DATABASE CHANGES PROPOSED
+
+FEATURES TO ADD
+
+FEATURES TO REPOSITION
+
+FEATURES TO DEPRECATE
+
+FEATURES TO REMOVE
+
+RISKS
+
+MIGRATION STRATEGY
+
+TEST STRATEGY
+
+PROPOSED IMPLEMENTATION PHASES
+
+Then STOP.
+
+Do NOT begin implementation.
+
+Wait until the product owner explicitly says:
+
+APPROVED — BEGIN CONNECTIVITY PHASE 1
+
+==================================================
+39. CONNECTIVITY PHASE 1 — AFTER APPROVAL ONLY
+==============================================
+
+Only after explicit approval:
+
+Implement the provider-agnostic foundation.
+
+Focus on:
+
+provider types
+
+capability registry
+
+canonical models
+
+integration data structures
+
+unit mapping architecture
+
+sync health architecture
+
+generic reconciliation architecture
+
+Do NOT yet implement every provider.
+
+Then test.
+
+Stop for review.
+
+==================================================
+40. CONNECTIVITY PHASE 2 — BEDS24
+=================================
+
+Only after Phase 1 is accepted:
+
+Implement Beds24 as the first real provider adapter.
+
+Use CURRENT official Beds24 API V2 documentation.
+
+Do not use deprecated API V1 for new work.
+
+Initial functionality:
+
+connection test
+
+properties/rooms
+
+unit mapping
+
+reservation read
+
+incremental reservation synchronization
+
+modification synchronization
+
+cancellation synchronization
+
+reconciliation
+
+sync health
+
+error handling
+
+Do not enable outbound rate management yet.
+
+==================================================
+41. CONNECTIVITY PHASE 3 — REAL VALIDATION
+==========================================
+
+After implementation:
+
+Connect a controlled real Beds24 test account.
+
+Map one test villa first.
+
+Validate:
+
+initial reservation
+
+new OTA reservation
+
+reservation modification
+
+cancellation
+
+availability impact
+
+duplicate event protection
+
+conflict handling
+
+sync health reporting
+
+Only expand to all ARSAVAYA units after the test unit passes.
+
+==================================================
+42. FINAL PRODUCT PRINCIPLE
+===========================
+
+ARSAVAYA should not try to become every hospitality product.
+
+Its competitive advantage should be:
+
+Excellent villa-management operations.
+
+Reliable integrations.
+
+Clear owner reporting.
+
+Strong operational workflows.
+
+One coherent source of operational truth.
+
+Build ARSAVAYA as the operating system of the villa management business, while specialist external platforms handle functions where certified connectivity or specialist infrastructure already exists.
