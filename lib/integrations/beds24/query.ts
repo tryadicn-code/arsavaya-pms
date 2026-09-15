@@ -1,13 +1,19 @@
 /**
  * Beds24 booking query builder.
  *
- * ISOLATED from the rest of the codebase because the exact spelling of
- * the incremental modified-time filter is NOT fully verified against live
- * Swagger. If Swagger confirms `modifiedFrom`, flip USE_MODIFIED_FROM to
- * true; otherwise the adapter uses date-range bounded polling.
+ * FIX 3 — FALLBACK MODE SEMANTICS
  *
- * VERIFIED filters: status, filter=arrivals, arrivalFrom/arrivalTo/...
- * UNVERIFIED: modifiedFrom (secondary evidence only)
+ * When USE_MODIFIED_FROM is false (current), the adapter does NOT send
+ * `modifiedFrom`. The "incremental" sync is actually BOUNDED DATE-RANGE
+ * POLLING — not true modified-time incremental synchronization.
+ *
+ * The cursor's lastModifiedAt is retained for FUTURE provider-version
+ * tracking. It does NOT currently guarantee that all provider-side
+ * changes are observed. Cancellations in particular require a separate
+ * query with status=cancelled (see adapter.ts).
+ *
+ * Do NOT flip this to true until `modifiedFrom` is live-verified against
+ * the official Beds24 Swagger.
  */
 export const USE_MODIFIED_FROM = false;
 
@@ -45,7 +51,9 @@ function addDays(iso: string, n: number): string {
   return new Date(t + n * 86400000).toISOString().slice(0, 10);
 }
 
-export function buildInitialSyncQuery(policy: InitialSyncPolicy = DEFAULT_INITIAL_POLICY): BookingQuery {
+export function buildInitialSyncQuery(
+  policy: InitialSyncPolicy = DEFAULT_INITIAL_POLICY,
+): BookingQuery {
   const today = todayUtc();
   return {
     arrivalFrom: addDays(today, -policy.pastDays),
@@ -53,7 +61,9 @@ export function buildInitialSyncQuery(policy: InitialSyncPolicy = DEFAULT_INITIA
   };
 }
 
-export function buildIncrementalSyncQuery(cursor: { lastModifiedAt?: string } | null): BookingQuery {
+export function buildIncrementalSyncQuery(
+  cursor: { lastModifiedAt?: string | null } | null,
+): BookingQuery {
   if (!cursor?.lastModifiedAt) return buildInitialSyncQuery();
   if (USE_MODIFIED_FROM) return { modifiedFrom: cursor.lastModifiedAt };
   // Safe fallback: bounded date-range around now
