@@ -87,3 +87,8 @@ yarn-error.log*
 # =========================
 .DS_Store
 Thumbs.db
+
+.phase1-backup/
+lint-report.txt
+tsconfig.tsbuildinfo
+*.log
