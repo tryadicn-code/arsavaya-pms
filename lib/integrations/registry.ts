@@ -65,6 +65,10 @@ export function createDefaultRegistry(): ProviderRegistry {
       'webhooks',
     ],
   });
+  // Beds24 adapter factory is instantiated directly by:
+  //   - app/api/integrations/beds24/route.ts
+  //   - lib/integrations/beds24/sync.ts
+  // No factory registration needed here in Phase 2.
 
   return registry;
 }
