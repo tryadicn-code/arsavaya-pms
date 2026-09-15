@@ -14,5 +14,20 @@ export function validateCalendarUrl(ota:string,value:string){let u:URL;try{u=new
 export async function fetchCalendar(conn:Connection){const url=validateCalendarUrl(conn.ota,conn.url);const r=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(15000),headers:{Accept:'text/calendar'}});if(!r.ok||!r.body)throw Error('OTA tidak mengembalikan kalender. Periksa URL ekspor dan status listing.');const reader=r.body.getReader();let bytes=0;const chunks:Uint8Array[]=[];for(;;){const {done,value}=await reader.read();if(done)break;bytes+=value.length;if(bytes>1000000){await reader.cancel();throw Error('Ukuran kalender melebihi batas.');}chunks.push(value)}const all=new Uint8Array(bytes);let i=0;for(const chunk of chunks){all.set(chunk,i);i+=chunk.length;}return parseCalendar(new TextDecoder().decode(all));}
 export function connectionMutation(s:State,action:string,p:any){const c=ensureChannels(s);if(action==='channel-update'){const conn=c.connections.find(x=>x.id===p.id);if(!conn)throw Error('Listing tidak ditemukan.');if(conn.mode==='ical')conn.url=validateCalendarUrl(conn.ota,p.url);conn.error=null;conn.lastAttempt=null;}else if(action==='channel-add'){if(!s.units.some(u=>u.id===p.unit))throw Error('Unit tidak ditemukan.');if(!['Airbnb','Booking.com','Agoda','Traveloka','Vrbo','Lainnya'].includes(p.ota))throw Error('OTA tidak valid.');if(typeof p.listing!=='string'||!p.listing.trim()||p.listing.length>150)throw Error('Masukkan ID atau nama listing.');if(c.connections.some(x=>x.ota===p.ota&&x.listing===p.listing.trim()))throw Error('Listing ini sudah dipetakan.');if(c.connections.length>=64)throw Error('Maksimal 64 pemetaan listing.');const mode=p.mode==='ical'?'ical':'api';const url=mode==='ical'?validateCalendarUrl(p.ota,p.url):'';c.connections.push({id:crypto.randomUUID(),unit:p.unit,ota:p.ota,listing:p.listing.trim(),mode,url,enabled:true,token:crypto.randomUUID().replace(/-/g,'')+crypto.randomUUID().replace(/-/g,''),lastSync:null,lastAttempt:null,error:null,outbound:'pending'});}else if(action==='channel-toggle'){const conn=c.connections.find(x=>x.id===p.id);if(!conn||typeof p.enabled!=='boolean')throw Error('Listing tidak valid.');conn.enabled=p.enabled;}else throw Error('Tindakan kanal tidak dikenal.');return s;}
 export async function tokenHash(token:string){return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(token)))).map(x=>x.toString(16).padStart(2,'0')).join('');}
+/**
+ * ============================================================
+ * DEMO SIMULATION - NOT live OTA / channel-manager connectivity.
+ *
+ * This helper fabricates placeholder connections and iCal-style
+ * events purely so the `channel-demo` action can preview channel
+ * interactions inside the demo workspace. It performs NO network
+ * calls to any OTA or channel manager and must never be presented
+ * as production connectivity or live synchronization.
+ *
+ * For real connectivity, see `lib/integrations/*` (provider registry,
+ * adapter contract, reconciliation engine).
+ * ============================================================
+ */
+export const DEMO_SIMULATION_MARKER = 'DEMO_SIMULATION' as const;
 export function simulateChannels(s:State,unit:string,event:string){if(!s.units.some(u=>u.id===unit)||!['create','move','cancel'].includes(event))throw Error('Simulasi tidak valid.');const c=ensureChannels(s);for(const ota of ['Airbnb','Booking.com','Agoda','Traveloka'])if(!c.connections.some(x=>x.unit===unit&&x.listing==='SIMULASI-'+unit+'-'+ota))connectionMutation(s,'channel-add',{unit,ota,listing:'SIMULASI-'+unit+'-'+ota,mode:'api'});const source=c.connections.find(x=>x.listing==='SIMULASI-'+unit+'-Airbnb')!;const now=new Date();const day=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Makassar',year:'numeric',month:'2-digit',day:'2-digit'}).format(now);const shift=(n:number)=>new Date(Date.parse(day+'T00:00:00Z')+n*86400000).toISOString().slice(0,10);mergeCalendar(s,source.id,event==='cancel'?[]:[{uid:'simulated-'+unit,start:shift(event==='move'?4:1),end:shift(event==='move'?6:3),summary:'SIMULASI — Reservasi Airbnb',cancelled:false}]);return s;}
 
