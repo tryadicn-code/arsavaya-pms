@@ -103,22 +103,31 @@ export async function POST(req: Request) {
     }
 
     if (action === 'test') {
+      const existing = await getAccount(d1, key, 'beds24');
       const adapter = new Beds24Adapter({ accountId, workspace: key });
       const result = await adapter.testConnection();
       const now = new Date().toISOString();
+
       await upsertAccount(d1, {
         id: accountId,
         workspace: key,
         provider: 'beds24',
         status: result.ok ? 'CONNECTED' : 'ERROR',
-        externalAccountId: null,
+        externalAccountId: existing?.externalAccountId ?? null,
         credentialSource: 'env:BEDS24_READ_TOKEN',
-        configJson: null,
-        lastSyncAt: result.ok ? now : null,
+        configJson: existing?.configJson ?? null,
+
+        // Connection test is NOT a synchronization.
+        // Only a real successful sync may set lastSyncAt.
+        lastSyncAt: existing?.lastSyncAt ?? null,
+
         lastError: result.ok ? null : result.message ?? 'unknown',
-        createdAt: now,
+
+        // Preserve account creation timestamp across test re-runs.
+        createdAt: existing?.createdAt ?? now,
         updatedAt: now,
       });
+
       return response({ ok: result.ok, message: result.message });
     }
 
