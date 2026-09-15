@@ -6,6 +6,13 @@
  *   - Auth header: `token`
  *   - Rate-limit headers: x-five-min-limit-remaining, x-five-min-limit-resets-in, x-request-cost
  *   - Pagination: follow pages.nextPageLink when pages.nextPageExists === true
+ *
+ * REDIRECT POLICY:
+ *   - `redirect: 'manual'` (Cloudflare/Miniflare requires manual handling).
+ *   - 3xx responses are NOT auto-followed.
+ *   - Location must exist, must resolve, and must target the trusted origin.
+ *   - Even trusted-origin redirects fail clearly in this phase — no silent follow.
+ *   - The Beds24 token is never resent to any other origin.
  */
 import { buildAuthHeaders } from './headers.ts';
 import {
@@ -75,6 +82,14 @@ export class Beds24Client {
       try {
         const res = await this.doFetch(url, headers, opts);
         this.captureRateLimit(res);
+
+        // ---- Manual redirect handling ----
+        // 3xx responses are NEVER auto-followed. The token must not be
+        // resent to any origin other than https://api.beds24.com.
+        if (res.status >= 300 && res.status < 400) {
+          throw this.buildRedirectError(res, url);
+        }
+
         if (res.ok) {
           if (res.status === 204) return undefined as T;
           try {
@@ -121,6 +136,50 @@ export class Beds24Client {
     throw lastError instanceof IntegrationError
       ? lastError
       : translateNetworkError(lastError);
+  }
+
+  /**
+   * Build a clear IntegrationError for any 3xx response without following it.
+   * Rules:
+   *   1. Location header must exist.
+   *   2. Location must resolve (relative allowed).
+   *   3. Resolved origin must equal https://api.beds24.com.
+   *   4. Even trusted-origin redirects are NOT auto-followed in this phase.
+   */
+  private buildRedirectError(res: Response, requestUrl: string): IntegrationError {
+    const location = res.headers.get('location');
+    if (!location) {
+      return new IntegrationError(
+        ERROR_CATEGORY.invalidResponse,
+        `Beds24 returned redirect (${res.status}) without Location header.`,
+        { provider: 'beds24' },
+      );
+    }
+
+    let resolved: URL;
+    try {
+      resolved = new URL(location, requestUrl);
+    } catch {
+      return new IntegrationError(
+        ERROR_CATEGORY.invalidResponse,
+        `Beds24 returned redirect (${res.status}) with invalid Location header.`,
+        { provider: 'beds24' },
+      );
+    }
+
+    if (resolved.origin !== TRUSTED_ORIGIN) {
+      return new IntegrationError(
+        ERROR_CATEGORY.invalidResponse,
+        `Beds24 redirect target origin is not trusted: ${resolved.origin}`,
+        { provider: 'beds24' },
+      );
+    }
+
+    return new IntegrationError(
+      ERROR_CATEGORY.invalidResponse,
+      `Beds24 redirect (${res.status}) to trusted origin is not auto-followed.`,
+      { provider: 'beds24', safeDetail: resolved.pathname },
+    );
   }
 
   /**
@@ -209,7 +268,7 @@ export class Beds24Client {
         headers,
         body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
         signal: ctrl.signal,
-        redirect: 'error',
+        redirect: 'manual',
       });
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') throw translateTimeoutError();
