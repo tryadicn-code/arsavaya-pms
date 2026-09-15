@@ -92,3 +92,6 @@ Thumbs.db
 lint-report.txt
 tsconfig.tsbuildinfo
 *.log
+
+# Next.js auto-generated
+next-env.d.ts
