@@ -1,4 +1,5 @@
-import {getChatGPTUser} from '../../chatgpt-auth';
+import {getApplicationContext} from '../../../lib/auth';
+import {demoWorkspaceId} from '../../../lib/auth/workspace';
 import {db} from '../../../lib/storage';
 import {initial,mutate} from '../../../lib/pms';
 import {ensureAutomation,runAutomation} from '../../../lib/automation';
@@ -6,16 +7,24 @@ import {ensureChannels,fetchCalendar,mergeCalendar,tokenHash} from '../../../lib
 import type {ParsedEvent} from '../../../lib/channels';
 export const dynamic='force-dynamic';
 const response=(data:unknown,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store'}});
-async function identity(req:Request){const user=await getChatGPTUser();if(!user)return null;return (new URL(req.url).searchParams.get('demo')==='1'?'demo:':'live:')+user.userId;}
+type IdentityResult={key:string}|{error:403};
+async function identity(req:Request):Promise<IdentityResult|null>{
+ const ctx=await getApplicationContext();if(!ctx)return null;
+ const demo=new URL(req.url).searchParams.get('demo')==='1';
+ if(!demo)return {key:ctx.workspaceId};
+ const k=demoWorkspaceId(ctx.environment,ctx.user);
+ if(k===null)return {error:403};
+ return {key:k};
+}
 export async function GET(req:Request){
- try{const key=await identity(req);if(!key)return response({error:'Silakan masuk untuk membuka data vila.'},401);
+ try{const ident=await identity(req);if(!ident)return response({error:'Silakan masuk untuk membuka data vila.'},401);if('error' in ident)return response({error:'Mode data contoh tidak tersedia di lingkungan produksi.'},ident.error);const key=ident.key;
  const d=db();await d.prepare('INSERT OR IGNORE INTO pms_workspace (id,version,data) VALUES (?,0,?)').bind(key,JSON.stringify(initial(key.startsWith('demo:')))).run();
  const row=await d.prepare('SELECT version,data FROM pms_workspace WHERE id=?').bind(key).first<{version:number;data:string}>();
  const state=JSON.parse(row!.data);ensureAutomation(state);ensureChannels(state);return response({version:row!.version,state});
  }catch(e){console.error(e);return response({error:'Data belum dapat dimuat. Coba kembali.'},503);}
 }
 export async function POST(req:Request){
- try{const key=await identity(req);if(!key)return response({error:'Silakan masuk terlebih dahulu.'},401);
+ try{const ident=await identity(req);if(!ident)return response({error:'Silakan masuk terlebih dahulu.'},401);if('error' in ident)return response({error:'Mode data contoh tidak tersedia di lingkungan produksi.'},ident.error);const key=ident.key;
  if(req.headers.get('sec-fetch-site')==='cross-site')return response({error:'Permintaan ditolak.'},403);
  const raw=await req.text();if(raw.length>15000)return response({error:'Permintaan terlalu besar.'},413);
  const {action,payload,version}=JSON.parse(raw);if(action==='channel-demo'&&!key.startsWith('demo:'))return response({error:'Simulasi hanya tersedia dalam mode data contoh.'},403);const d=db();

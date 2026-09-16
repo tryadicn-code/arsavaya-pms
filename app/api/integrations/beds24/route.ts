@@ -1,4 +1,4 @@
-import { getChatGPTUser } from '../../../chatgpt-auth';
+import { getApplicationContext } from '../../../../lib/auth';
 import type { State } from '../../../../lib/pms';
 import { db } from '../../../../lib/storage';
 import { Beds24Adapter } from '../../../../lib/integrations/beds24/adapter';
@@ -23,11 +23,15 @@ export const dynamic = 'force-dynamic';
 const response = (data: unknown, status = 200) =>
   Response.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
 
-async function identity(req: Request): Promise<string | null> {
-  const user = await getChatGPTUser();
-  if (!user) return null;
-  if (new URL(req.url).searchParams.get('demo') === '1') return null;
-  return 'live:' + user.userId;
+type IdentityResult = { key: string } | { error: 403 };
+
+async function identity(req: Request): Promise<IdentityResult | null> {
+  const ctx = await getApplicationContext();
+  if (!ctx) return null;
+  if (new URL(req.url).searchParams.get('demo') === '1') {
+    return { error: 403 };
+  }
+  return { key: ctx.workspaceId };
 }
 
 async function loadWorkspace(key: string): Promise<{ version: number; state: unknown } | null> {
@@ -51,8 +55,12 @@ async function saveWorkspace(key: string, version: number, state: unknown): Prom
 
 export async function POST(req: Request) {
   try {
-    const key = await identity(req);
-    if (!key) return response({ error: 'Silakan masuk untuk mengakses integrasi.' }, 401);
+    const ident = await identity(req);
+    if (!ident) return response({ error: 'Silakan masuk untuk mengakses integrasi.' }, 401);
+    if ('error' in ident) {
+      return response({ error: 'Mode data contoh tidak tersedia untuk integrasi.' }, ident.error);
+    }
+    const key = ident.key;
     if (req.headers.get('sec-fetch-site') === 'cross-site') {
       return response({ error: 'Permintaan ditolak.' }, 403);
     }
