@@ -15,7 +15,7 @@ export const Beds24ListWrapper = z.object({
   pages: z
     .object({
       nextPageExists: z.boolean().optional(),
-      nextPageLink: z.string().optional(),
+      nextPageLink: z.string().nullish(),
     })
     .optional(),
   data: z.array(z.unknown()).optional(),

@@ -60,7 +60,10 @@ export function mapBeds24Booking(raw: unknown): MapResult<CanonicalReservation> 
   if (!b.propertyId || !b.roomId) return { ok: false, error: 'propertyId/roomId missing' };
   if (!b.arrival || !b.departure) return { ok: false, error: 'arrival/departure missing' };
 
-  const externalUnitId = `${b.propertyId}:${b.roomId}`;
+  // IMPORTANT: externalUnitId is ONLY the Beds24 roomId.
+  // It MUST match channel_manager_unit_mappings.external_unit_id.
+  // The propertyId is preserved separately via externalPropertyId.
+  const externalUnitId = b.roomId;
   const status = mapBeds24Status(b.status);
   const channel = resolveChannel(b.apiSourceId, b.apiSource);
   const adults = typeof b.numAdult === 'number' && b.numAdult > 0 ? b.numAdult : 1;
@@ -74,6 +77,7 @@ export function mapBeds24Booking(raw: unknown): MapResult<CanonicalReservation> 
       externalReference: b.apiReference ?? b.reference ?? undefined,
       externalChannel: channel,
       externalUnitId,
+      externalPropertyId: b.propertyId ?? undefined,
       arrival: b.arrival,
       departure: b.departure,
       guestName: combineName(b.firstName, b.lastName),

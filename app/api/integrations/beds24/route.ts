@@ -13,6 +13,7 @@ import {
 } from '../../../../lib/integrations/db';
 import { computeSyncHealth } from '../../../../lib/integrations/sync-health';
 import { createUnitMapping } from '../../../../lib/integrations/unit-mapping';
+import { decideMappingSave } from '../../../../lib/integrations/beds24/mapping';
 
 export const dynamic = 'force-dynamic';
 
@@ -151,17 +152,54 @@ export async function POST(req: Request) {
           400,
         );
       }
-      const now = new Date().toISOString();
+
       const existing = await listUnitMappings(d1, accountId);
-      const dup = existing.find(
-        (m) =>
-          m.externalPropertyId === externalPropertyId &&
-          m.externalUnitId === externalUnitId &&
-          m.localUnitId !== localUnitId,
-      );
-      if (dup) {
-        return response({ error: 'External unit sudah dipetakan ke unit lokal lain.' }, 409);
+      const decision = decideMappingSave(existing, {
+        localUnitId,
+        externalPropertyId,
+        externalUnitId,
+      });
+
+      if (decision.kind === 'unchanged') {
+        // Idempotent: exact same mapping already exists.
+        return response({
+          ok: true,
+          mapping: decision.mapping,
+          unchanged: true,
+        });
       }
+
+      if (decision.kind === 'conflict-external') {
+        return response(
+          {
+            error: 'External unit sudah dipetakan ke unit lokal lain.',
+            existing: {
+              localUnitId: decision.existing.localUnitId,
+              externalPropertyId: decision.existing.externalPropertyId,
+              externalUnitId: decision.existing.externalUnitId,
+            },
+          },
+          409,
+        );
+      }
+
+      if (decision.kind === 'conflict-local') {
+        return response(
+          {
+            error:
+              'Unit lokal sudah dipetakan ke external unit lain. Hapus mapping lama terlebih dahulu.',
+            existing: {
+              localUnitId: decision.existing.localUnitId,
+              externalPropertyId: decision.existing.externalPropertyId,
+              externalUnitId: decision.existing.externalUnitId,
+            },
+          },
+          409,
+        );
+      }
+
+      // kind === 'create'
+      const now = new Date().toISOString();
       const m = createUnitMapping({
         id: crypto.randomUUID(),
         accountId,

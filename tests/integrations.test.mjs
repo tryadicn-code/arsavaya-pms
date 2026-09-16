@@ -445,6 +445,51 @@ test('sync-runs: cursor is opaque string', () => {
   );
   assert.equal(typeof run.cursorAfter, 'string');
 });
+// ===== needsReview → status derivation (Phase 2 Gate 4 fix) =====
+test('sync-run: unmapped reservation scenario → PARTIAL (needsReview>0, created=0)', () => {
+  const run = completeSyncRun(
+    newSyncRun({ id: 'sr1', workspace: 'w', accountId: 'a', provider: 'p' }),
+    {
+      receivedCount: 1,
+      createdCount: 0,
+      needsReviewCount: 1,
+    },
+  );
+  assert.notEqual(run.status, 'SUCCESS', 'run with NEEDS_REVIEW must not be SUCCESS');
+  assert.equal(run.status, 'PARTIAL');
+  assert.equal(run.receivedCount, 1);
+  assert.equal(run.createdCount, 0);
+  assert.equal(run.needsReviewCount, 1);
+});
 
+test('sync-run: mapped reservation scenario → SUCCESS (created=1, needsReview=0)', () => {
+  const run = completeSyncRun(
+    newSyncRun({ id: 'sr1', workspace: 'w', accountId: 'a', provider: 'p' }),
+    {
+      receivedCount: 1,
+      createdCount: 1,
+      needsReviewCount: 0,
+    },
+  );
+  assert.equal(run.status, 'SUCCESS');
+  assert.equal(run.createdCount, 1);
+  assert.equal(run.needsReviewCount, 0);
+});
+
+test('sync-run: conflict and error counters unaffected', () => {
+  const conflictRun = completeSyncRun(
+    newSyncRun({ id: 'sr1', workspace: 'w', accountId: 'a', provider: 'p' }),
+    { receivedCount: 2, createdCount: 1, conflictCount: 1 },
+  );
+  assert.equal(conflictRun.status, 'PARTIAL');
+  assert.equal(conflictRun.conflictCount, 1);
+
+  const errorRun = completeSyncRun(
+    newSyncRun({ id: 'sr2', workspace: 'w', accountId: 'a', provider: 'p' }),
+    { receivedCount: 0, errorCount: 1, lastError: 'boom' },
+  );
+  assert.equal(errorRun.status, 'FAILED');
+  assert.equal(errorRun.errorCount, 1);
+});
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 if (failed > 0) process.exit(1);

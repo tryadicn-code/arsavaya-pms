@@ -278,6 +278,7 @@ let priorEvents: IntegrationEventRow[] = [];
     updatedCount: applied.updated,
     cancelledCount: applied.cancelled,
     conflictCount: applied.conflict,
+    needsReviewCount: applied.needsReview,
     errorCount: errors.length,
     lastError: errors[0] ?? null,
     now: now(),

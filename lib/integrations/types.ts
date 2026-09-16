@@ -58,7 +58,17 @@ export type CanonicalReservation = {
   externalId: string;
   externalReference?: string;
   externalChannel?: string;
+
+  /**
+   * Stable Beds24 room/unit ID (or provider-equivalent).
+   * MUST match channel_manager_unit_mappings.external_unit_id.
+   * The property ID is stored separately in externalPropertyId.
+   */
   externalUnitId: string;
+
+  /** Beds24 property ID. Optional — not used for mapping lookup. */
+  externalPropertyId?: string;
+
   localUnitId?: string;
   arrival: string;
   departure: string;

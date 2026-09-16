@@ -331,6 +331,7 @@ function mapSyncRun(r: Record<string, unknown>): SyncRunRecord {
     updatedCount: Number(r.updated_count ?? 0),
     cancelledCount: Number(r.cancelled_count ?? 0),
     conflictCount: Number(r.conflict_count ?? 0),
+    needsReviewCount: 0, // no DB column — status still reflects PARTIAL via completeSyncRun
     errorCount: Number(r.error_count ?? 0),
     lastError: r.last_error == null ? null : String(r.last_error),
   };
