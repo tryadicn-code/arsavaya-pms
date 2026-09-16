@@ -2,6 +2,17 @@ import { env } from 'cloudflare:workers';
 import type { ReconciliationStatus } from './types.ts';
 import type { SyncRunRecord, SyncRunStatus } from './sync-runs.ts';
 import type { UnitMapping } from './unit-mapping.ts';
+import {
+  HISTORY_DEFAULT_LIMIT,
+  HISTORY_MAX_LIMIT,
+  ISSUES_DEFAULT_LIMIT,
+  ISSUES_MAX_LIMIT,
+  mapEventRowToIssueSummary,
+  mapSyncRunRowToSummary,
+  normalizeLimit,
+  type IntegrationIssueSummary,
+  type SyncRunSummary,
+} from './db-queries.ts';
 
 export function integrationDb(): D1Database {
   if (!env.DB) throw new Error('Penyimpanan belum tersedia.');
@@ -262,6 +273,62 @@ export async function getLatestSyncRun(
     .bind(accountId)
     .first<Record<string, unknown>>();
   return row ? mapSyncRun(row) : null;
+}
+/**
+ * Provider-neutral: list recent sync runs for an account (workspace-scoped).
+ * Newest first. Bounded by limit (default 30, max 100).
+ */
+export async function listSyncRuns(
+  d1: D1Database,
+  accountId: string,
+  options: { limit?: unknown } = {},
+): Promise<SyncRunSummary[]> {
+  const limit = normalizeLimit(
+    options.limit,
+    HISTORY_DEFAULT_LIMIT,
+    HISTORY_MAX_LIMIT,
+  );
+  const res = await d1
+    .prepare(
+      'SELECT id, workspace, account_id, provider, sync_type, started_at, finished_at, ' +
+        'status, received_count, created_count, updated_count, cancelled_count, ' +
+        'conflict_count, error_count, last_error ' +
+        'FROM sync_runs WHERE account_id=? ORDER BY started_at DESC LIMIT ?',
+    )
+    .bind(accountId, limit)
+    .all<Record<string, unknown>>();
+  return (res.results ?? []).map(mapSyncRunRowToSummary);
+}
+
+/**
+ * Provider-neutral: list integration issues requiring operator attention.
+ * Currently: NEEDS_REVIEW + CONFLICT only.
+ * Newest first. Bounded by limit (default 50, max 200).
+ *
+ * Raw provider payloads, dedupe internals, and unnecessary PII are
+ * never returned — see mapEventRowToIssueSummary.
+ */
+export async function listIntegrationIssues(
+  d1: D1Database,
+  accountId: string,
+  options: { limit?: unknown } = {},
+): Promise<IntegrationIssueSummary[]> {
+  const limit = normalizeLimit(
+    options.limit,
+    ISSUES_DEFAULT_LIMIT,
+    ISSUES_MAX_LIMIT,
+  );
+  const res = await d1
+    .prepare(
+      'SELECT id, workspace, account_id, provider, event_type, external_id, ' +
+        'local_entity_id, reconciliation_status, metadata, error, received_at, processed_at ' +
+        "FROM integration_events WHERE account_id=? " +
+        "AND reconciliation_status IN ('NEEDS_REVIEW','CONFLICT') " +
+        'ORDER BY received_at DESC LIMIT ?',
+    )
+    .bind(accountId, limit)
+    .all<Record<string, unknown>>();
+  return (res.results ?? []).map(mapEventRowToIssueSummary);
 }
 
 function mapAccount(r: Record<string, unknown>): AccountRow {

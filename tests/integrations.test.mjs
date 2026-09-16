@@ -23,6 +23,15 @@ import {
 import { reconcile } from '../lib/integrations/reconciliation.ts';
 import { computeSyncHealth } from '../lib/integrations/sync-health.ts';
 import { newSyncRun, completeSyncRun } from '../lib/integrations/sync-runs.ts';
+import {
+  normalizeLimit,
+  mapSyncRunRowToSummary,
+  mapEventRowToIssueSummary,
+  HISTORY_DEFAULT_LIMIT,
+  HISTORY_MAX_LIMIT,
+  ISSUES_DEFAULT_LIMIT,
+  ISSUES_MAX_LIMIT,
+} from '../lib/integrations/db-queries.ts';
 
 let passed = 0;
 let failed = 0;
@@ -490,6 +499,223 @@ test('sync-run: conflict and error counters unaffected', () => {
   );
   assert.equal(errorRun.status, 'FAILED');
   assert.equal(errorRun.errorCount, 1);
+});
+// ===== Sub-Phase A: db-queries pure helpers =====
+test('normalizeLimit: undefined → default', () => {
+  assert.equal(normalizeLimit(undefined, 30, 100), 30);
+  assert.equal(normalizeLimit(null, 30, 100), 30);
+});
+
+test('normalizeLimit: non-finite → default', () => {
+  assert.equal(normalizeLimit('abc', 30, 100), 30);
+  assert.equal(normalizeLimit(NaN, 30, 100), 30);
+  assert.equal(normalizeLimit(Infinity, 30, 100), 30);
+});
+
+test('normalizeLimit: valid value kept (floored)', () => {
+  assert.equal(normalizeLimit(15, 30, 100), 15);
+  assert.equal(normalizeLimit(15.9, 30, 100), 15);
+});
+
+test('normalizeLimit: below min → min (1)', () => {
+  assert.equal(normalizeLimit(0, 30, 100), 1);
+  assert.equal(normalizeLimit(-5, 30, 100), 1);
+});
+
+test('normalizeLimit: above max → max', () => {
+  assert.equal(normalizeLimit(999, 30, 100), 100);
+  assert.equal(normalizeLimit(1000, 50, 200), 200);
+});
+
+test('normalizeLimit: constants exposed correctly', () => {
+  assert.equal(HISTORY_DEFAULT_LIMIT, 30);
+  assert.equal(HISTORY_MAX_LIMIT, 100);
+  assert.equal(ISSUES_DEFAULT_LIMIT, 50);
+  assert.equal(ISSUES_MAX_LIMIT, 200);
+});
+
+test('mapSyncRunRowToSummary: maps safe operational fields', () => {
+  const row = {
+    id: 'run-1',
+    workspace: 'live:u1',
+    account_id: 'live:u1:beds24',
+    provider: 'beds24',
+    sync_type: 'reservations',
+    started_at: '2026-09-16T10:00:00.000Z',
+    finished_at: '2026-09-16T10:00:05.000Z',
+    status: 'SUCCESS',
+    cursor_before: 'old-cursor-secret',
+    cursor_after: 'new-cursor-secret',
+    received_count: 5,
+    created_count: 2,
+    updated_count: 1,
+    cancelled_count: 1,
+    conflict_count: 0,
+    error_count: 0,
+    last_error: null,
+  };
+  const s = mapSyncRunRowToSummary(row);
+  assert.equal(s.id, 'run-1');
+  assert.equal(s.provider, 'beds24');
+  assert.equal(s.syncType, 'reservations');
+  assert.equal(s.status, 'SUCCESS');
+  assert.equal(s.receivedCount, 5);
+  assert.equal(s.createdCount, 2);
+  assert.equal(s.updatedCount, 1);
+  assert.equal(s.cancelledCount, 1);
+  assert.equal(s.conflictCount, 0);
+  assert.equal(s.errorCount, 0);
+  assert.equal(s.lastError, null);
+});
+
+test('mapSyncRunRowToSummary: strips cursor / workspace / account_id', () => {
+  const row = {
+    id: 'run-1',
+    workspace: 'live:u1',
+    account_id: 'live:u1:beds24',
+    provider: 'beds24',
+    sync_type: 'reservations',
+    started_at: '2026-09-16T10:00:00.000Z',
+    finished_at: null,
+    status: 'PARTIAL',
+    cursor_before: 'SECRET-CURSOR-A',
+    cursor_after: 'SECRET-CURSOR-B',
+    received_count: 1,
+    created_count: 0,
+    updated_count: 0,
+    cancelled_count: 0,
+    conflict_count: 0,
+    error_count: 0,
+    last_error: null,
+  };
+  const s = mapSyncRunRowToSummary(row);
+  const json = JSON.stringify(s);
+  assert.ok(!json.includes('SECRET-CURSOR-A'), 'cursor_before must not leak');
+  assert.ok(!json.includes('SECRET-CURSOR-B'), 'cursor_after must not leak');
+  assert.ok(!json.includes('live:u1'), 'workspace must not leak');
+  assert.ok(!('accountId' in s), 'account_id must not be exposed');
+});
+
+test('mapEventRowToIssueSummary: NEEDS_REVIEW retained', () => {
+  const row = {
+    id: 'evt-1',
+    workspace: 'live:u1',
+    account_id: 'live:u1:beds24',
+    provider: 'beds24',
+    event_type: 'reservation',
+    external_id: '93184767',
+    entity_key: 'entity|beds24|...',
+    dedupe_key: 'event|...',
+    external_updated_at: '2026-09-15T23:04:36Z',
+    local_entity_id: null,
+    reconciliation_status: 'NEEDS_REVIEW',
+    metadata: JSON.stringify({ arrival: '2026-09-17', departure: '2026-09-18', externalUnitId: '730761', channel: 'Direct' }),
+    error: 'No confirmed unit mapping',
+    received_at: '2026-09-16T10:00:00.000Z',
+    processed_at: '2026-09-16T10:00:01.000Z',
+  };
+  const s = mapEventRowToIssueSummary(row);
+  assert.equal(s.reconciliationStatus, 'NEEDS_REVIEW');
+  assert.equal(s.externalId, '93184767');
+  assert.equal(s.reason, 'No confirmed unit mapping');
+});
+
+test('mapEventRowToIssueSummary: metadata whitelisted (safe keys only)', () => {
+  const row = {
+    id: 'evt-1',
+    provider: 'beds24',
+    event_type: 'reservation',
+    external_id: 'X',
+    local_entity_id: null,
+    reconciliation_status: 'CONFLICT',
+    metadata: JSON.stringify({
+      arrival: '2026-01-01',
+      departure: '2026-01-05',
+      externalUnitId: '730761',
+      channel: 'Airbnb',
+      guestEmail: 'PII@example.com',
+      guestPhone: '+62...',
+      price: 9999,
+      notes: 'internal',
+    }),
+    error: 'overlaps RSV-1',
+    received_at: '2026-09-16T10:00:00.000Z',
+    processed_at: null,
+  };
+  const s = mapEventRowToIssueSummary(row);
+  assert.deepEqual(Object.keys(s.metadata ?? {}).sort(), [
+    'arrival',
+    'channel',
+    'departure',
+    'externalUnitId',
+  ]);
+  const json = JSON.stringify(s);
+  assert.ok(!json.includes('PII@example.com'), 'guest email must not leak');
+  assert.ok(!json.includes('+62'), 'guest phone must not leak');
+  assert.ok(!json.includes('9999'), 'price must not leak');
+  assert.ok(!json.includes('internal'), 'notes must not leak');
+});
+
+test('mapEventRowToIssueSummary: malformed metadata → null (no crash)', () => {
+  const row = {
+    id: 'evt-1',
+    provider: 'beds24',
+    event_type: 'reservation',
+    external_id: 'X',
+    local_entity_id: null,
+    reconciliation_status: 'NEEDS_REVIEW',
+    metadata: 'not valid json{{{',
+    error: 'reason',
+    received_at: '2026-09-16T10:00:00.000Z',
+    processed_at: null,
+  };
+  const s = mapEventRowToIssueSummary(row);
+  assert.equal(s.metadata, null);
+});
+
+test('mapEventRowToIssueSummary: strips dedupe_key and entity_key', () => {
+  const row = {
+    id: 'evt-1',
+    provider: 'beds24',
+    event_type: 'reservation',
+    external_id: 'X',
+    entity_key: 'SECRET-ENTITY-KEY',
+    dedupe_key: 'SECRET-DEDUPE-KEY',
+    external_updated_at: 'SECRET-TS',
+    local_entity_id: null,
+    reconciliation_status: 'CONFLICT',
+    metadata: null,
+    error: 'overlap',
+    received_at: '2026-09-16T10:00:00.000Z',
+    processed_at: null,
+  };
+  const s = mapEventRowToIssueSummary(row);
+  const json = JSON.stringify(s);
+  assert.ok(!json.includes('SECRET-ENTITY-KEY'), 'entity_key must not leak');
+  assert.ok(!json.includes('SECRET-DEDUPE-KEY'), 'dedupe_key must not leak');
+  assert.ok(!json.includes('SECRET-TS'), 'external_updated_at must not leak');
+});
+
+test('mapEventRowToIssueSummary: no workspace or account_id exposed', () => {
+  const row = {
+    id: 'evt-1',
+    workspace: 'live:secret-workspace',
+    account_id: 'live:secret-workspace:beds24',
+    provider: 'beds24',
+    event_type: 'reservation',
+    external_id: 'X',
+    local_entity_id: null,
+    reconciliation_status: 'CONFLICT',
+    metadata: null,
+    error: 'overlap',
+    received_at: '2026-09-16T10:00:00.000Z',
+    processed_at: null,
+  };
+  const s = mapEventRowToIssueSummary(row);
+  const json = JSON.stringify(s);
+  assert.ok(!json.includes('secret-workspace'), 'workspace must not leak');
+  assert.ok(!('accountId' in s), 'account_id must not be present');
+  assert.ok(!('workspace' in s), 'workspace key must not be present');
 });
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 if (failed > 0) process.exit(1);

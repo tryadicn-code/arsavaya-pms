@@ -153,7 +153,7 @@ await testAsync('client: parses rate limit headers', async () => {
 
 await testAsync('client: follows nextPageLink only on trusted origin', async () => {
   let pages = 0;
-  const mockFetch = async (url) => {
+  const mockFetch = async () => {
     pages++;
     if (pages === 1) {
       return new Response(JSON.stringify({

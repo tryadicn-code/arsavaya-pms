@@ -1,4 +1,5 @@
 import { getChatGPTUser } from '../../../chatgpt-auth';
+import type { State } from '../../../../lib/pms';
 import { db } from '../../../../lib/storage';
 import { Beds24Adapter } from '../../../../lib/integrations/beds24/adapter';
 import { isConfigured } from '../../../../lib/integrations/beds24/auth';
@@ -9,6 +10,8 @@ import {
   listUnitMappings,
   upsertUnitMapping,
   getLatestSyncRun,
+  listSyncRuns,
+  listIntegrationIssues,
   integrationDb,
 } from '../../../../lib/integrations/db';
 import { computeSyncHealth } from '../../../../lib/integrations/sync-health';
@@ -214,6 +217,28 @@ export async function POST(req: Request) {
       return response({ ok: true, mapping: m });
     }
 
+        // --- history (provider-neutral sync runs) ---
+    if (action === 'history') {
+      const runs = await listSyncRuns(d1, accountId, {
+        limit: payload?.limit,
+      });
+      return response({
+        provider: 'beds24',
+        runs,
+      });
+    }
+
+    // --- issues (NEEDS_REVIEW / CONFLICT) ---
+    if (action === 'issues') {
+      const issues = await listIntegrationIssues(d1, accountId, {
+        limit: payload?.limit,
+      });
+      return response({
+        provider: 'beds24',
+        issues,
+      });
+    }
+
     if (action === 'sync') {
       const mode = payload?.mode === 'incremental' ? 'incremental' : 'initial';
       if (!isConfigured()) {
@@ -227,7 +252,7 @@ export async function POST(req: Request) {
         accountId,
         provider: 'beds24',
         loadWorkspace: () =>
-          loadWorkspace(key) as Promise<{ version: number; state: any } | null>,
+          loadWorkspace(key) as Promise<{ version: number; state: State } | null>,
         saveWorkspace: (v, s) => saveWorkspace(key, v, s),
       });
       const acc = await getAccount(d1, key, 'beds24');
