@@ -95,3 +95,6 @@ tsconfig.tsbuildinfo
 
 # Next.js auto-generated
 next-env.d.ts
+# Auto-generated (do not commit)
+next-env.d.ts
+tsconfig.tsbuildinfo
