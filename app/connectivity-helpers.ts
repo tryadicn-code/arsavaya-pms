@@ -481,3 +481,242 @@ function sanitizeEcho(msg: string): string {
   if (/(token|secret|api[_-]?key|bearer|password)\s*[:=]/i.test(msg)) return '';
   return msg;
 }
+
+// =====================================================================
+// Sub-Phase E — Sync Controls + Result Summary + Issues + History
+// =====================================================================
+
+// ---------- sync run status badge ----------
+
+export type SyncStatusTone = 'green' | 'amber' | 'red' | 'blue' | 'muted';
+export type SyncStatusBadge = { label: string; tone: SyncStatusTone };
+
+export function mapSyncRunStatus(raw: string | null | undefined): SyncStatusBadge {
+  switch ((raw ?? '').toUpperCase()) {
+    case 'SUCCESS':
+      return { label: 'Berhasil', tone: 'green' };
+    case 'PARTIAL':
+    case 'WARNING':
+      return { label: 'Selesai dengan perhatian', tone: 'amber' };
+    case 'FAILED':
+    case 'ERROR':
+      return { label: 'Gagal', tone: 'red' };
+    case 'RUNNING':
+    case 'SYNCING':
+      return { label: 'Sedang berjalan', tone: 'blue' };
+    default:
+      return { label: 'Tidak diketahui', tone: 'muted' };
+  }
+}
+
+// ---------- safe sync run ----------
+
+export type SafeSyncRun = {
+  id: string;
+  syncType: string;
+  status: string;
+  startedAt: string;
+  finishedAt: string | null;
+  receivedCount: number;
+  createdCount: number;
+  updatedCount: number;
+  cancelledCount: number;
+  conflictCount: number;
+  errorCount: number;
+  /** null when backend does not expose it (e.g. history source) */
+  needsReviewCount: number | null;
+  lastError: string | null;
+};
+
+function numOr0(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0;
+}
+
+export function extractSafeSyncRun(raw: unknown): SafeSyncRun | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.id !== 'string' || r.id.length === 0) return null;
+  if (typeof r.startedAt !== 'string') return null;
+  return {
+    id: r.id,
+    syncType: typeof r.syncType === 'string' ? r.syncType : 'reservations',
+    status: typeof r.status === 'string' ? r.status : 'UNKNOWN',
+    startedAt: r.startedAt,
+    finishedAt: typeof r.finishedAt === 'string' ? r.finishedAt : null,
+    receivedCount: numOr0(r.receivedCount),
+    createdCount: numOr0(r.createdCount),
+    updatedCount: numOr0(r.updatedCount),
+    cancelledCount: numOr0(r.cancelledCount),
+    conflictCount: numOr0(r.conflictCount),
+    errorCount: numOr0(r.errorCount),
+    needsReviewCount:
+      typeof r.needsReviewCount === 'number' && Number.isFinite(r.needsReviewCount)
+        ? Math.floor(r.needsReviewCount)
+        : null,
+    lastError: typeof r.lastError === 'string' ? r.lastError : null,
+  };
+}
+
+export function extractSafeSyncHistory(raw: unknown): SafeSyncRun[] {
+  if (!raw || typeof raw !== 'object') return [];
+  const obj = raw as Record<string, unknown>;
+  const arr = Array.isArray(obj.runs) ? obj.runs : [];
+  const out: SafeSyncRun[] = [];
+  for (const item of arr) {
+    const run = extractSafeSyncRun(item);
+    if (run) out.push(run);
+  }
+  return out;
+}
+
+// ---------- sync response (action: 'sync') ----------
+
+export type SafeSyncResult = {
+  run: SafeSyncRun;
+  errors: string[];
+};
+
+export function extractSyncResult(raw: unknown): SafeSyncResult | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const run = extractSafeSyncRun(r.run);
+  if (!run) return null;
+  const errors = Array.isArray(r.errors)
+    ? r.errors.filter((x): x is string => typeof x === 'string')
+    : [];
+  return { run, errors };
+}
+
+// ---------- sync mode derivation ----------
+
+export function deriveNextSyncMode(
+  history: readonly SafeSyncRun[],
+): 'initial' | 'incremental' {
+  const hasSuccessful = history.some(
+    (r) => r.status === 'SUCCESS' || r.status === 'PARTIAL',
+  );
+  return hasSuccessful ? 'incremental' : 'initial';
+}
+
+// ---------- issues (NEEDS_REVIEW + CONFLICT) ----------
+
+export type IssueStatus = 'NEEDS_REVIEW' | 'CONFLICT';
+
+export type SafeIssue = {
+  id: string;
+  eventType: string;
+  externalId: string;
+  reconciliationStatus: IssueStatus;
+  localEntityId: string | null;
+  metadata: Record<string, string> | null;
+  reason: string | null;
+  receivedAt: string;
+  processedAt: string | null;
+};
+
+const SAFE_ISSUE_META_KEYS: ReadonlySet<string> = new Set([
+  'arrival',
+  'departure',
+  'externalUnitId',
+  'channel',
+]);
+
+export function safeIssueMetadata(raw: unknown): Record<string, string> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (SAFE_ISSUE_META_KEYS.has(k) && typeof v === 'string' && v.length > 0) {
+      out[k] = v;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+export function extractSafeIssues(raw: unknown): {
+  needsReview: SafeIssue[];
+  conflict: SafeIssue[];
+} {
+  const needsReview: SafeIssue[] = [];
+  const conflict: SafeIssue[] = [];
+  const obj = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const arr = Array.isArray(obj.issues) ? obj.issues : [];
+  for (const item of arr) {
+    if (!item || typeof item !== 'object') continue;
+    const r = item as Record<string, unknown>;
+    const status = typeof r.reconciliationStatus === 'string' ? r.reconciliationStatus : '';
+    if (status !== 'NEEDS_REVIEW' && status !== 'CONFLICT') continue;
+    const issue: SafeIssue = {
+      id: typeof r.id === 'string' ? r.id : '',
+      eventType: typeof r.eventType === 'string' ? r.eventType : '',
+      externalId: typeof r.externalId === 'string' ? r.externalId : '',
+      reconciliationStatus: status as IssueStatus,
+      localEntityId: typeof r.localEntityId === 'string' ? r.localEntityId : null,
+      metadata: safeIssueMetadata(r.metadata),
+      reason: typeof r.reason === 'string' ? r.reason : null,
+      receivedAt: typeof r.receivedAt === 'string' ? r.receivedAt : '',
+      processedAt: typeof r.processedAt === 'string' ? r.processedAt : null,
+    };
+    if (status === 'NEEDS_REVIEW') needsReview.push(issue);
+    else conflict.push(issue);
+  }
+  return { needsReview, conflict };
+}
+
+// ---------- formatting ----------
+
+export function formatDuration(
+  startedAt: string | null,
+  finishedAt: string | null,
+): string {
+  if (!startedAt || !finishedAt) return '—';
+  const s = Date.parse(startedAt);
+  const e = Date.parse(finishedAt);
+  if (!Number.isFinite(s) || !Number.isFinite(e) || e < s) return '—';
+  const ms = e - s;
+  if (ms < 1000) return `${ms} ms`;
+  const sec = ms / 1000;
+  if (sec < 60) return `${sec.toFixed(1)} detik`;
+  const min = Math.floor(sec / 60);
+  const remSec = Math.round(sec - min * 60);
+  return `${min} menit ${remSec} detik`;
+}
+
+// ---------- sync feedback text builder ----------
+
+export type SyncFeedback = {
+  kind: 'success' | 'warning' | 'error';
+  title: string;
+  summary: string | null;
+};
+
+export function buildSyncFeedback(run: SafeSyncRun): SyncFeedback {
+  const s = (run.status || '').toUpperCase();
+  const parts: string[] = [];
+  if (run.createdCount > 0) parts.push(`${run.createdCount} dibuat`);
+  if (run.updatedCount > 0) parts.push(`${run.updatedCount} diperbarui`);
+  if (run.cancelledCount > 0) parts.push(`${run.cancelledCount} dibatalkan`);
+  if (run.conflictCount > 0) parts.push(`${run.conflictCount} konflik`);
+  if (run.needsReviewCount !== null && run.needsReviewCount > 0)
+    parts.push(`${run.needsReviewCount} perlu diperiksa`);
+  if (run.errorCount > 0) parts.push(`${run.errorCount} error`);
+  const summary = parts.length > 0 ? parts.join(' · ') : null;
+
+  if (s === 'SUCCESS') {
+    return { kind: 'success', title: 'Sinkronisasi selesai.', summary };
+  }
+  if (s === 'PARTIAL' || s === 'WARNING') {
+    return {
+      kind: 'warning',
+      title: 'Sinkronisasi selesai dengan beberapa item yang perlu diperiksa.',
+      summary,
+    };
+  }
+  if (s === 'FAILED' || s === 'ERROR') {
+    return {
+      kind: 'error',
+      title: 'Sinkronisasi gagal. Periksa status koneksi dan coba kembali.',
+      summary,
+    };
+  }
+  return { kind: 'error', title: 'Sinkronisasi tidak dapat diselesaikan.', summary };
+}

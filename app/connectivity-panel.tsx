@@ -12,6 +12,8 @@ import {
   Check,
   Info,
   ChevronRight,
+  Play,
+  CircleAlert,
 } from 'lucide-react';
 import type { State } from '../lib/pms';
 import ChannelsPanel from './channels-panel';
@@ -25,6 +27,13 @@ import {
   buildMappingViewModel,
   suggestMapping,
   mapMappingSaveError,
+  mapSyncRunStatus,
+  extractSafeSyncHistory,
+  extractSyncResult,
+  extractSafeIssues,
+  deriveNextSyncMode,
+  formatDuration,
+  buildSyncFeedback,
   CAPABILITIES_SUPPORTED,
   CAPABILITIES_NOT_SUPPORTED,
   PROVIDER_DISPLAY_NAME,
@@ -37,15 +46,18 @@ import {
   type SafeMapping,
   type PropertyHierarchy,
   type UnitMappingViewModel,
+  type SafeSyncRun,
+  type SafeIssue,
 } from './connectivity-helpers';
+
+const HISTORY_LIMIT = 20;
+const ISSUES_LIMIT = 50;
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleString('id-ID', { timeZone: 'Asia/Makassar' });
 }
 
-type MappingStatusBadge = { label: string; tone: string };
-
-function statusBadge(s: UnitMappingViewModel['status']): MappingStatusBadge {
+function statusBadge(s: UnitMappingViewModel['status']): { label: string; tone: string } {
   if (s === 'MAPPED') return { label: 'Terpetakan', tone: 'green' };
   if (s === 'NEEDS_ATTENTION') return { label: 'Perlu perhatian', tone: 'amber' };
   return { label: 'Belum dipetakan', tone: 'muted' };
@@ -56,6 +68,8 @@ type MappingFormState = {
   externalPropertyId: string;
   externalUnitId: string;
 };
+
+type Feedback = { kind: 'success' | 'warning' | 'error'; message: string } | null;
 
 export default function ConnectivityPanel({
   state,
@@ -68,13 +82,15 @@ export default function ConnectivityPanel({
   busy: boolean;
   save: (action: string, payload: unknown) => Promise<boolean | undefined>;
 }) {
+  // ---------- Status ----------
   const [status, setStatus] = useState<Beds24StatusViewModel | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
   const [statusError, setStatusError] = useState('');
   const [testing, setTesting] = useState(false);
-  const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
+  const [feedback, setFeedback] = useState<Feedback>(null);
   const [statusTick, setStatusTick] = useState(0);
 
+  // ---------- Inventory + Mappings ----------
   const [properties, setProperties] = useState<SafeProperty[]>([]);
   const [rooms, setRooms] = useState<SafeRoom[]>([]);
   const [mappings, setMappings] = useState<SafeMapping[]>([]);
@@ -83,9 +99,25 @@ export default function ConnectivityPanel({
   const [inventoryTick, setInventoryTick] = useState(0);
   const [mappingForm, setMappingForm] = useState<MappingFormState | null>(null);
   const [savingMapping, setSavingMapping] = useState(false);
-  const [mappingFeedback, setMappingFeedback] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
-
+  const [mappingFeedback, setMappingFeedback] = useState<Feedback>(null);
   const formRef = useRef<HTMLDivElement>(null);
+
+  // ---------- Sync + History + Issues ----------
+  const [historyRuns, setHistoryRuns] = useState<SafeSyncRun[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState('');
+  const [issues, setIssues] = useState<{ needsReview: SafeIssue[]; conflict: SafeIssue[] }>({
+    needsReview: [],
+    conflict: [],
+  });
+  const [issuesLoading, setIssuesLoading] = useState(true);
+  const [issuesError, setIssuesError] = useState('');
+  const [syncRunning, setSyncRunning] = useState(false);
+  const [syncFeedback, setSyncFeedback] = useState<Feedback>(null);
+  const [confirmInitial, setConfirmInitial] = useState(false);
+  const [syncTick, setSyncTick] = useState(0);
+
+  // ---------- Effects ----------
 
   useEffect(() => {
     let cancelled = false;
@@ -164,6 +196,68 @@ export default function ConnectivityPanel({
     }, 50);
     return () => clearTimeout(t);
   }, [mappingForm]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setHistoryLoading(true);
+      try {
+        const r = await fetch('/api/integrations/beds24', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'history', payload: { limit: HISTORY_LIMIT } }),
+        });
+        const j = (await r.json()) as Record<string, unknown>;
+        if (cancelled) return;
+        if (!r.ok) {
+          const msg = typeof j.error === 'string' ? j.error : 'Riwayat tidak dapat dimuat';
+          throw new Error(msg);
+        }
+        setHistoryRuns(extractSafeSyncHistory(j));
+        setHistoryError('');
+      } catch (e) {
+        if (cancelled) return;
+        setHistoryError(mapBeds24Error(e));
+      } finally {
+        if (!cancelled) setHistoryLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [syncTick]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setIssuesLoading(true);
+      try {
+        const r = await fetch('/api/integrations/beds24', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'issues', payload: { limit: ISSUES_LIMIT } }),
+        });
+        const j = (await r.json()) as Record<string, unknown>;
+        if (cancelled) return;
+        if (!r.ok) {
+          const msg = typeof j.error === 'string' ? j.error : 'Daftar perhatian tidak dapat dimuat';
+          throw new Error(msg);
+        }
+        setIssues(extractSafeIssues(j));
+        setIssuesError('');
+      } catch (e) {
+        if (cancelled) return;
+        setIssuesError(mapBeds24Error(e));
+      } finally {
+        if (!cancelled) setIssuesLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [syncTick]);
+
+  // ---------- Handlers ----------
 
   const onTestConnection = async () => {
     if (testing) return;
@@ -257,14 +351,98 @@ export default function ConnectivityPanel({
     }
   };
 
+  const nextMode = deriveNextSyncMode(historyRuns);
+
+  const runSync = async (mode: 'initial' | 'incremental') => {
+    if (syncRunning) return;
+    setSyncRunning(true);
+    setSyncFeedback(null);
+    try {
+      const r = await fetch('/api/integrations/beds24', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'sync', payload: { mode } }),
+      });
+      const j = (await r.json()) as Record<string, unknown>;
+      if (!r.ok) {
+        setSyncFeedback({
+          kind: 'error',
+          message: 'Sinkronisasi gagal. Periksa status koneksi dan coba kembali.',
+        });
+      } else {
+        const result = extractSyncResult(j);
+        if (result) {
+          const fb = buildSyncFeedback(result.run);
+          setSyncFeedback({
+            kind: fb.kind,
+            message: fb.summary ? `${fb.title} (${fb.summary})` : fb.title,
+          });
+        } else {
+          setSyncFeedback({ kind: 'success', message: 'Sinkronisasi selesai.' });
+        }
+      }
+      setSyncTick((t) => t + 1);
+      setStatusTick((t) => t + 1);
+    } catch {
+      setSyncFeedback({
+        kind: 'error',
+        message: 'Sinkronisasi gagal. Periksa status koneksi dan coba kembali.',
+      });
+    } finally {
+      setSyncRunning(false);
+    }
+  };
+
+  const onClickSyncPrimary = () => {
+    if (syncRunning) return;
+    if (nextMode === 'initial') {
+      setConfirmInitial(true);
+    } else {
+      void runSync('incremental');
+    }
+  };
+
+  const onConfirmInitial = () => {
+    setConfirmInitial(false);
+    void runSync('initial');
+  };
+
+  const onRefreshAll = () => {
+    setSyncFeedback(null);
+    setStatusTick((t) => t + 1);
+    setInventoryTick((t) => t + 1);
+    setSyncTick((t) => t + 1);
+  };
+
   const hierarchy: PropertyHierarchy[] = buildPropertyHierarchy(properties, rooms);
   const localUnits = state.units.map((u) => ({ id: u.id, name: u.name }));
   const mappingVM: UnitMappingViewModel[] = buildMappingViewModel(localUnits, hierarchy, mappings);
   const view = status ? mapBeds24Status(status.health) : null;
   const noInventory = !inventoryLoading && !inventoryError && properties.length === 0;
 
+  const latestRun = historyRuns.length > 0 ? historyRuns[0] : null;
+  const latestBadge = latestRun ? mapSyncRunStatus(latestRun.status) : null;
+
   return (
     <>
+      <style>{`
+        .history-desktop { display: block; }
+        .history-mobile { display: none; }
+        .mapping-desktop { display: block; }
+        .mapping-mobile { display: none; }
+        @media (max-width: 768px) {
+          .mapping-desktop { display: none; }
+          .mapping-mobile { display: block; }
+          .history-desktop { display: none; }
+          .history-mobile { display: block; }
+        }
+        .issue-cell-safe {
+          word-break: break-word;
+          overflow-wrap: anywhere;
+          white-space: normal;
+        }
+      `}</style>
+
       {/* B. Provider Overview */}
       <section className="panel">
         <div className="panel-heading">
@@ -325,9 +503,7 @@ export default function ConnectivityPanel({
               </div>
               <div>
                 <small>KREDENSIAL</small>
-                <strong>
-                  {status.configured ? 'Terkonfigurasi' : 'Belum dikonfigurasi'}
-                </strong>
+                <strong>{status.configured ? 'Terkonfigurasi' : 'Belum dikonfigurasi'}</strong>
               </div>
               <div>
                 <small>KONEKSI</small>
@@ -442,7 +618,7 @@ export default function ConnectivityPanel({
 
         {!inventoryLoading && !inventoryError && properties.length > 0 && (
           <>
-            <div className="table-wrap">
+            <div className="table-wrap mapping-desktop">
               <table>
                 <thead>
                   <tr>
@@ -477,9 +653,7 @@ export default function ConnectivityPanel({
                         <td>
                           <span className={`badge ${badge.tone}`}>{badge.label}</span>
                           {vm.reason && (
-                            <small
-                              style={{ display: 'block', marginTop: 4, color: 'inherit' }}
-                            >
+                            <small style={{ display: 'block', marginTop: 4 }}>
                               {vm.reason}
                             </small>
                           )}
@@ -499,6 +673,82 @@ export default function ConnectivityPanel({
                   })}
                 </tbody>
               </table>
+            </div>
+
+            <div className="mapping-mobile">
+              {mappingVM.map((vm) => {
+                const badge = statusBadge(vm.status);
+                return (
+                  <div
+                    key={vm.localUnitId}
+                    className="panel"
+                    style={{ marginBottom: 10, padding: 12 }}
+                  >
+                    <div className="between">
+                      <div>
+                        <strong>{vm.localUnitName}</strong>
+                        <small style={{ display: 'block', marginTop: 2 }}>
+                          {vm.localUnitId}
+                        </small>
+                      </div>
+                      <span className={`badge ${badge.tone}`}>{badge.label}</span>
+                    </div>
+
+                    <div style={{ marginTop: 10 }}>
+                      {vm.mapping ? (
+                        <>
+                          <div
+                            style={{
+                              wordBreak: 'break-word',
+                              overflowWrap: 'anywhere',
+                            }}
+                          >
+                            <strong>{vm.mapping.roomName}</strong>
+                          </div>
+                          <small
+                            style={{
+                              display: 'block',
+                              marginTop: 2,
+                              wordBreak: 'break-word',
+                              overflowWrap: 'anywhere',
+                            }}
+                          >
+                            {vm.mapping.propertyName}
+                          </small>
+                          <small style={{ display: 'block', marginTop: 2 }}>
+                            {vm.mapping.externalPropertyId}/{vm.mapping.externalUnitId}
+                          </small>
+                        </>
+                      ) : (
+                        <span className="text-muted">Belum dipetakan</span>
+                      )}
+                    </div>
+
+                    {vm.reason && (
+                      <small
+                        style={{
+                          display: 'block',
+                          marginTop: 8,
+                          wordBreak: 'break-word',
+                        }}
+                      >
+                        {vm.reason}
+                      </small>
+                    )}
+
+                    <div className="button-row" style={{ marginTop: 10 }}>
+                      <button
+                        className="secondary"
+                        disabled={savingMapping}
+                        onClick={() => openMappingForm(vm.localUnitId)}
+                      >
+                        {vm.mapping ? 'Ubah' : 'Petakan'}
+                        <ChevronRight size={14} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
 
             {mappingForm && (
@@ -531,11 +781,7 @@ export default function ConnectivityPanel({
                 className={mappingFeedback.kind === 'success' ? 'note' : 'error'}
                 role={mappingFeedback.kind === 'success' ? 'status' : 'alert'}
               >
-                {mappingFeedback.kind === 'success' ? (
-                  <Check size={14} />
-                ) : (
-                  <AlertTriangle size={14} />
-                )}{' '}
+                {mappingFeedback.kind === 'success' ? <Check size={14} /> : <AlertTriangle size={14} />}{' '}
                 {mappingFeedback.message}
               </p>
             )}
@@ -547,11 +793,59 @@ export default function ConnectivityPanel({
       <section className="panel">
         <div className="panel-heading">
           <h2>Sinkronisasi</h2>
-          <RefreshCw size={18} />
+          <div className="inline">
+            <button
+              className="secondary"
+              disabled={historyLoading || issuesLoading || syncRunning}
+              onClick={onRefreshAll}
+              aria-label="Muat ulang data sinkronisasi"
+            >
+              <RefreshCw size={15} />
+            </button>
+            <Play size={18} />
+          </div>
         </div>
-        <div className="empty">
-          <p>Kontrol sinkronisasi akan tersedia setelah koneksi dan pemetaan siap.</p>
+
+        <div className="note">
+          {nextMode === 'initial'
+            ? 'Menarik reservasi aktif dari Beds24 untuk membentuk kondisi awal ARSAVAYA.'
+            : 'Memeriksa perubahan reservasi terbaru dari Beds24.'}
         </div>
+
+        <div className="button-row">
+          <button className="primary" disabled={syncRunning} onClick={onClickSyncPrimary}>
+            <Play size={16} />
+            {syncRunning
+              ? 'Menyinkronkan…'
+              : nextMode === 'initial'
+                ? 'Jalankan Sinkronisasi Awal'
+                : 'Sinkronkan Sekarang'}
+          </button>
+        </div>
+
+        {syncRunning && (
+          <p className="note">ARSAVAYA sedang memeriksa reservasi dari Beds24.</p>
+        )}
+
+        {syncFeedback && (
+          <p
+            className={
+              syncFeedback.kind === 'success'
+                ? 'note'
+                : syncFeedback.kind === 'warning'
+                  ? 'note'
+                  : 'error'
+            }
+            role={syncFeedback.kind === 'error' ? 'alert' : 'status'}
+          >
+            {syncFeedback.kind === 'success' ? (
+              <Check size={14} />
+            ) : (
+              <AlertTriangle size={14} />
+            )}{' '}
+            {syncFeedback.message}
+          </p>
+        )}
       </section>
 
       {/* F. Last Sync Summary */}
@@ -559,20 +853,154 @@ export default function ConnectivityPanel({
         <div className="panel-heading">
           <h2>Ringkasan Sinkronisasi Terakhir</h2>
         </div>
-        <div className="empty">
-          <p>Belum ada sinkronisasi. Ringkasan hasil akan muncul setelah sinkronisasi pertama.</p>
-        </div>
+
+        {historyLoading && (
+          <div className="empty">
+            <RefreshCw size={22} />
+            <p>Memuat ringkasan…</p>
+          </div>
+        )}
+
+        {!historyLoading && historyError && (
+          <div className="empty">
+            <AlertTriangle size={22} />
+            <p>{historyError}</p>
+          </div>
+        )}
+
+        {!historyLoading && !historyError && !latestRun && (
+          <div className="empty">
+            <p>Belum ada sinkronisasi. Ringkasan hasil akan muncul setelah sinkronisasi pertama.</p>
+          </div>
+        )}
+
+        {!historyLoading && !historyError && latestRun && latestBadge && (
+          <>
+            <div className="detail-grid">
+              <div>
+                <small>STATUS</small>
+                <span className={`badge ${latestBadge.tone}`}>{latestBadge.label}</span>
+              </div>
+              <div>
+                <small>WAKTU</small>
+                <strong>{formatTime(latestRun.startedAt)}</strong>
+              </div>
+              <div>
+                <small>DURASI</small>
+                <strong>{formatDuration(latestRun.startedAt, latestRun.finishedAt)}</strong>
+              </div>
+              <div>
+                <small>DITERIMA</small>
+                <strong>{latestRun.receivedCount}</strong>
+              </div>
+              <div>
+                <small>DIBUAT</small>
+                <strong>{latestRun.createdCount}</strong>
+              </div>
+              <div>
+                <small>DIPERBARUI</small>
+                <strong>{latestRun.updatedCount}</strong>
+              </div>
+              <div>
+                <small>DIBATALKAN</small>
+                <strong>{latestRun.cancelledCount}</strong>
+              </div>
+              <div>
+                <small>KONFLIK</small>
+                <strong>{latestRun.conflictCount}</strong>
+              </div>
+              {latestRun.needsReviewCount !== null && (
+                <div>
+                  <small>PERLU DIPERIKSA</small>
+                  <strong>{latestRun.needsReviewCount}</strong>
+                </div>
+              )}
+              <div>
+                <small>ERROR</small>
+                <strong>{latestRun.errorCount}</strong>
+              </div>
+            </div>
+            {latestRun.lastError && (
+              <div className="error" role="alert">
+                {latestRun.lastError}
+              </div>
+            )}
+          </>
+        )}
       </section>
 
-      {/* G. Attention Required */}
+      {/* G. Perlu Perhatian */}
       <section className="panel attention">
         <div className="panel-heading">
           <h2>Perlu Perhatian</h2>
           <AlertTriangle size={18} />
         </div>
-        <div className="empty">
-          <p>Tidak ada masalah konektivitas yang memerlukan perhatian.</p>
-        </div>
+
+        {issuesLoading && (
+          <div className="empty">
+            <RefreshCw size={22} />
+            <p>Memuat daftar perhatian…</p>
+          </div>
+        )}
+
+        {!issuesLoading && issuesError && (
+          <div className="empty">
+            <AlertTriangle size={22} />
+            <p>{issuesError}</p>
+          </div>
+        )}
+
+        {!issuesLoading && !issuesError && (
+          <>
+            <h3 style={{ marginTop: 8 }}>Perlu Diperiksa</h3>
+            {issues.needsReview.length === 0 ? (
+              <p className="text-muted">Tidak ada item yang perlu diperiksa.</p>
+            ) : (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Reservasi eksternal</th>
+                      <th>Tanggal</th>
+                      <th>Sumber</th>
+                      <th>Alasan</th>
+                      <th>Diterima</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {issues.needsReview.map((issue) => (
+                      <IssueRow key={issue.id} issue={issue} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <h3 style={{ marginTop: 16 }}>Konflik</h3>
+            {issues.conflict.length === 0 ? (
+              <p className="text-muted">Tidak ada konflik terdeteksi.</p>
+            ) : (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Reservasi eksternal</th>
+                      <th>Tanggal</th>
+                      <th>Sumber</th>
+                      <th>Alasan</th>
+                      <th>Diterima</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {issues.conflict.map((issue) => (
+                      <IssueRow key={issue.id} issue={issue} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
       </section>
 
       {/* H. Sync History */}
@@ -581,9 +1009,118 @@ export default function ConnectivityPanel({
           <h2>Riwayat Sinkronisasi</h2>
           <History size={18} />
         </div>
-        <div className="empty">
-          <p>Belum ada riwayat sinkronisasi.</p>
-        </div>
+
+        {historyLoading && (
+          <div className="empty">
+            <RefreshCw size={22} />
+            <p>Memuat riwayat…</p>
+          </div>
+        )}
+
+        {!historyLoading && historyError && (
+          <div className="empty">
+            <AlertTriangle size={22} />
+            <p>{historyError}</p>
+          </div>
+        )}
+
+        {!historyLoading && !historyError && historyRuns.length === 0 && (
+          <div className="empty">
+            <p>Belum ada riwayat sinkronisasi.</p>
+          </div>
+        )}
+
+        {!historyLoading && !historyError && historyRuns.length > 0 && (
+          <>
+            <div className="table-wrap history-desktop">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Waktu</th>
+                    <th>Status</th>
+                    <th>Diterima</th>
+                    <th>Dibuat</th>
+                    <th>Diperbarui</th>
+                    <th>Dibatalkan</th>
+                    <th>Konflik</th>
+                    <th>Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {historyRuns.map((run) => {
+                    const badge = mapSyncRunStatus(run.status);
+                    return (
+                      <tr key={run.id}>
+                        <td>
+                          <strong>{formatTime(run.startedAt)}</strong>
+                          <small>{formatDuration(run.startedAt, run.finishedAt)}</small>
+                        </td>
+                        <td>
+                          <span className={`badge ${badge.tone}`}>{badge.label}</span>
+                        </td>
+                        <td>{run.receivedCount}</td>
+                        <td>{run.createdCount}</td>
+                        <td>{run.updatedCount}</td>
+                        <td>{run.cancelledCount}</td>
+                        <td>{run.conflictCount}</td>
+                        <td>{run.errorCount}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="history-mobile">
+              {historyRuns.map((run) => {
+                const badge = mapSyncRunStatus(run.status);
+                return (
+                  <div
+                    key={run.id}
+                    className="panel"
+                    style={{ marginBottom: 10, padding: 12 }}
+                  >
+                    <div className="between">
+                      <div>
+                        <strong>{formatTime(run.startedAt)}</strong>
+                        <small style={{ display: 'block', marginTop: 2 }}>
+                          {formatDuration(run.startedAt, run.finishedAt)}
+                        </small>
+                      </div>
+                      <span className={`badge ${badge.tone}`}>{badge.label}</span>
+                    </div>
+                    <div className="detail-grid" style={{ marginTop: 12 }}>
+                      <div>
+                        <small>DITERIMA</small>
+                        <strong>{run.receivedCount}</strong>
+                      </div>
+                      <div>
+                        <small>DIBUAT</small>
+                        <strong>{run.createdCount}</strong>
+                      </div>
+                      <div>
+                        <small>DIPERBARUI</small>
+                        <strong>{run.updatedCount}</strong>
+                      </div>
+                      <div>
+                        <small>DIBATALKAN</small>
+                        <strong>{run.cancelledCount}</strong>
+                      </div>
+                      <div>
+                        <small>KONFLIK</small>
+                        <strong>{run.conflictCount}</strong>
+                      </div>
+                      <div>
+                        <small>ERROR</small>
+                        <strong>{run.errorCount}</strong>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
       </section>
 
       {/* I. iCal Fallback */}
@@ -598,7 +1135,76 @@ export default function ConnectivityPanel({
         </div>
       </section>
       <ChannelsPanel state={state} demo={demo} busy={busy} save={save} />
+
+      {/* Initial Sync Confirmation Modal */}
+      {confirmInitial && (
+        <div className="overlay" onMouseDown={(e) => {
+          if (e.target === e.currentTarget && !syncRunning) setConfirmInitial(false);
+        }}>
+          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-initial-title">
+            <div className="modal-header">
+              <h2 id="confirm-initial-title">Jalankan sinkronisasi awal?</h2>
+            </div>
+            <div className="modal-body">
+              <p className="note">
+                ARSAVAYA akan menarik data reservasi dari Beds24 berdasarkan pemetaan unit
+                yang telah dikonfirmasi. Proses ini tidak menulis atau mengubah data di Beds24.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="secondary"
+                disabled={syncRunning}
+                onClick={() => setConfirmInitial(false)}
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                className="primary"
+                disabled={syncRunning}
+                onClick={onConfirmInitial}
+              >
+                Jalankan Sinkronisasi
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </>
+  );
+}
+
+// =====================================================================
+// Sub-components
+// =====================================================================
+
+function IssueRow({ issue }: { issue: SafeIssue }) {
+  const dates =
+    issue.metadata?.arrival && issue.metadata?.departure
+      ? `${issue.metadata.arrival} → ${issue.metadata.departure}`
+      : '—';
+  const channel = issue.metadata?.channel ?? '—';
+  const receivedAt = issue.receivedAt ? formatTime(issue.receivedAt) : '—';
+  return (
+    <tr>
+      <td className="issue-cell-safe">
+        <strong>{issue.externalId || '—'}</strong>
+        <small>{issue.eventType || '—'}</small>
+      </td>
+      <td className="issue-cell-safe">{dates}</td>
+      <td className="issue-cell-safe">{channel}</td>
+      <td className="issue-cell-safe">
+        <span className="inline">
+          <CircleAlert size={13} />
+          {issue.reason || '—'}
+        </span>
+      </td>
+      <td className="issue-cell-safe">
+        <small>{receivedAt}</small>
+      </td>
+    </tr>
   );
 }
 
@@ -619,7 +1225,7 @@ function MappingFormInline({
   saving: boolean;
   onSave: () => Promise<void>;
   onCancel: () => void;
-  feedback: { kind: 'success' | 'error'; message: string } | null;
+  feedback: Feedback;
 }) {
   const selectedProperty = hierarchy.find((p) => p.externalId === form.externalPropertyId);
   const selectedLocalUnit = localUnits.find((u) => u.id === form.localUnitId);

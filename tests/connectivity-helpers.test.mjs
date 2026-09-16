@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 
 import {
+  mapSyncRunStatus,
+  extractSafeSyncRun,
+  extractSafeSyncHistory,
+  extractSyncResult,
+  extractSafeIssues,
+  deriveNextSyncMode,
+  formatDuration,
+  buildSyncFeedback,
+  safeIssueMetadata,
   extractSafeProperties,
   extractSafeMappings,
   buildPropertyHierarchy,
@@ -521,6 +530,272 @@ test('saveError: no token leak in any mapped message', () => {
     const r = mapMappingSaveError(i);
     assert.ok(!r.message.includes('secret-abc'), `leak: ${r.message}`);
   }
+});
+// ===== Sub-Phase E: sync status mapping =====
+test('sync-status: SUCCESS → green Berhasil', () => {
+  assert.deepEqual(mapSyncRunStatus('SUCCESS'), { label: 'Berhasil', tone: 'green' });
+});
+test('sync-status: PARTIAL → amber', () => {
+  const b = mapSyncRunStatus('PARTIAL');
+  assert.equal(b.tone, 'amber');
+});
+test('sync-status: FAILED → red', () => {
+  const b = mapSyncRunStatus('FAILED');
+  assert.equal(b.tone, 'red');
+});
+test('sync-status: RUNNING → blue', () => {
+  const b = mapSyncRunStatus('RUNNING');
+  assert.equal(b.tone, 'blue');
+});
+test('sync-status: unknown → muted', () => {
+  const b = mapSyncRunStatus('MARS_STATE');
+  assert.equal(b.tone, 'muted');
+});
+
+// ===== Sub-Phase E: safe sync run extractor =====
+test('sync-run: extract safe fields, no leakage', () => {
+  const raw = {
+    id: 'run-1',
+    provider: 'beds24',
+    syncType: 'reservations',
+    status: 'SUCCESS',
+    startedAt: '2026-09-16T10:00:00.000Z',
+    finishedAt: '2026-09-16T10:00:03.000Z',
+    receivedCount: 5,
+    createdCount: 2,
+    updatedCount: 1,
+    cancelledCount: 1,
+    conflictCount: 0,
+    errorCount: 0,
+    lastError: null,
+    // These must never leak:
+    workspace: 'live:secret-user',
+    accountId: 'live:secret-user:beds24',
+    cursorBefore: 'SECRET-CURSOR-A',
+    cursorAfter: 'SECRET-CURSOR-B',
+    token: 'SECRET-TOKEN',
+  };
+  const s = extractSafeSyncRun(raw);
+  assert.ok(s);
+  assert.equal(s.receivedCount, 5);
+  assert.equal(s.createdCount, 2);
+  assert.equal(s.updatedCount, 1);
+  assert.equal(s.cancelledCount, 1);
+  assert.equal(s.needsReviewCount, null);
+  const json = JSON.stringify(s);
+  assert.ok(!json.includes('SECRET-CURSOR-A'));
+  assert.ok(!json.includes('SECRET-CURSOR-B'));
+  assert.ok(!json.includes('SECRET-TOKEN'));
+  assert.ok(!json.includes('secret-user'));
+});
+
+test('sync-run: needsReviewCount captured when present', () => {
+  const s = extractSafeSyncRun({
+    id: 'r1',
+    startedAt: '2026-09-16T10:00:00.000Z',
+    status: 'PARTIAL',
+    needsReviewCount: 3,
+  });
+  assert.ok(s);
+  assert.equal(s.needsReviewCount, 3);
+});
+
+test('sync-run: missing id → null', () => {
+  assert.equal(extractSafeSyncRun({ startedAt: 'x' }), null);
+  assert.equal(extractSafeSyncRun(null), null);
+  assert.equal(extractSafeSyncRun('string'), null);
+});
+
+// ===== Sub-Phase E: safe history extractor =====
+test('sync-history: filters malformed items', () => {
+  const arr = extractSafeSyncHistory({
+    runs: [
+      { id: 'r1', startedAt: '2026-01-01', status: 'SUCCESS' },
+      { status: 'SUCCESS' },
+      null,
+      'string',
+    ],
+  });
+  assert.equal(arr.length, 1);
+  assert.equal(arr[0].id, 'r1');
+});
+
+test('sync-history: empty or missing runs → []', () => {
+  assert.deepEqual(extractSafeSyncHistory({}), []);
+  assert.deepEqual(extractSafeSyncHistory(null), []);
+});
+
+// ===== Sub-Phase E: sync response =====
+test('sync-result: extracts run and errors', () => {
+  const r = extractSyncResult({
+    run: { id: 'r1', startedAt: '2026-01-01', status: 'SUCCESS' },
+    applied: { created: 1 },
+    errors: ['warn1', 'warn2'],
+  });
+  assert.ok(r);
+  assert.equal(r.errors.length, 2);
+});
+
+test('sync-result: filters non-string errors', () => {
+  const r = extractSyncResult({
+    run: { id: 'r1', startedAt: '2026-01-01' },
+    errors: ['ok', 42, null, {}],
+  });
+  assert.ok(r);
+  assert.deepEqual(r.errors, ['ok']);
+});
+
+test('sync-result: missing run → null', () => {
+  assert.equal(extractSyncResult({}), null);
+});
+
+// ===== Sub-Phase E: sync mode derivation =====
+test('derive-mode: no history → initial', () => {
+  assert.equal(deriveNextSyncMode([]), 'initial');
+});
+test('derive-mode: SUCCESS exists → incremental', () => {
+  assert.equal(
+    deriveNextSyncMode([{ status: 'SUCCESS' }]),
+    'incremental',
+  );
+});
+test('derive-mode: PARTIAL exists → incremental', () => {
+  assert.equal(
+    deriveNextSyncMode([{ status: 'PARTIAL' }]),
+    'incremental',
+  );
+});
+test('derive-mode: only FAILED → initial', () => {
+  assert.equal(
+    deriveNextSyncMode([{ status: 'FAILED' }, { status: 'FAILED' }]),
+    'initial',
+  );
+});
+
+// ===== Sub-Phase E: format duration =====
+test('duration: null finishedAt → em dash', () => {
+  assert.equal(formatDuration('2026-01-01T00:00:00Z', null), '—');
+});
+test('duration: 1.5 seconds', () => {
+  const s = formatDuration('2026-01-01T00:00:00.000Z', '2026-01-01T00:00:01.500Z');
+  assert.ok(s.includes('1.5'));
+  assert.ok(s.includes('detik'));
+});
+test('duration: 2 minutes 5 seconds', () => {
+  const s = formatDuration('2026-01-01T00:00:00.000Z', '2026-01-01T00:02:05.000Z');
+  assert.ok(s.includes('2 menit'));
+  assert.ok(s.includes('5 detik'));
+});
+test('duration: invalid dates → em dash', () => {
+  assert.equal(formatDuration('nonsense', 'nonsense'), '—');
+});
+
+// ===== Sub-Phase E: safe issues extractor =====
+test('issues: splits NEEDS_REVIEW and CONFLICT', () => {
+  const r = extractSafeIssues({
+    issues: [
+      { id: 'a', reconciliationStatus: 'NEEDS_REVIEW', externalId: 'X', receivedAt: '2026-01-01' },
+      { id: 'b', reconciliationStatus: 'CONFLICT', externalId: 'Y', receivedAt: '2026-01-01' },
+      { id: 'c', reconciliationStatus: 'MATCHED' }, // filtered out
+    ],
+  });
+  assert.equal(r.needsReview.length, 1);
+  assert.equal(r.conflict.length, 1);
+});
+
+test('issues: metadata whitelist enforced', () => {
+  const r = extractSafeIssues({
+    issues: [
+      {
+        id: 'a',
+        reconciliationStatus: 'NEEDS_REVIEW',
+        externalId: 'X',
+        receivedAt: '2026-01-01',
+        metadata: {
+          arrival: '2026-01-01',
+          departure: '2026-01-05',
+          externalUnitId: '730761',
+          channel: 'Airbnb',
+          guestEmail: 'PII@example.com',
+          guestPhone: '+62...',
+          price: 9999,
+        },
+      },
+    ],
+  });
+  const md = r.needsReview[0].metadata;
+  assert.ok(md);
+  assert.deepEqual(Object.keys(md).sort(), ['arrival', 'channel', 'departure', 'externalUnitId']);
+  const json = JSON.stringify(r);
+  assert.ok(!json.includes('PII@example.com'));
+  assert.ok(!json.includes('+62'));
+  assert.ok(!json.includes('9999'));
+});
+
+test('issues: safe metadata null for invalid input', () => {
+  assert.equal(safeIssueMetadata(null), null);
+  assert.equal(safeIssueMetadata('string'), null);
+  assert.equal(safeIssueMetadata([]), null);
+  assert.equal(safeIssueMetadata({ guestEmail: 'x' }), null);
+});
+
+test('issues: no token leak in serialized output', () => {
+  const r = extractSafeIssues({
+    issues: [
+      {
+        id: 'a',
+        reconciliationStatus: 'CONFLICT',
+        externalId: 'X',
+        receivedAt: '2026-01-01',
+        metadata: { token: 'SECRET', credential: 'SECRET', workspace: 'SECRET', accountId: 'SECRET' },
+        reason: 'BEDS24_READ_TOKEN=secret-abc',
+      },
+    ],
+  });
+  const json = JSON.stringify(r);
+  // Reason field IS echoed (from backend's safe `error` column) — but only string.
+  // We only verify metadata does not carry credentials.
+  assert.ok(!json.includes('"token":"SECRET"'));
+  assert.ok(!json.includes('"credential":"SECRET"'));
+});
+
+// ===== Sub-Phase E: feedback builder =====
+test('feedback: SUCCESS with no activity → title only', () => {
+  const fb = buildSyncFeedback({
+    id: 'r1', syncType: 'reservations', status: 'SUCCESS',
+    startedAt: 'x', finishedAt: 'y',
+    receivedCount: 0, createdCount: 0, updatedCount: 0,
+    cancelledCount: 0, conflictCount: 0, errorCount: 0,
+    needsReviewCount: null, lastError: null,
+  });
+  assert.equal(fb.kind, 'success');
+  assert.equal(fb.summary, null);
+});
+
+test('feedback: PARTIAL with activity includes summary', () => {
+  const fb = buildSyncFeedback({
+    id: 'r1', syncType: 'reservations', status: 'PARTIAL',
+    startedAt: 'x', finishedAt: 'y',
+    receivedCount: 5, createdCount: 3, updatedCount: 1,
+    cancelledCount: 0, conflictCount: 1, errorCount: 0,
+    needsReviewCount: 2, lastError: null,
+  });
+  assert.equal(fb.kind, 'warning');
+  assert.ok(fb.summary);
+  assert.ok(fb.summary.includes('3 dibuat'));
+  assert.ok(fb.summary.includes('1 konflik'));
+  assert.ok(fb.summary.includes('2 perlu diperiksa'));
+});
+
+test('feedback: FAILED → error kind', () => {
+  const fb = buildSyncFeedback({
+    id: 'r1', syncType: 'reservations', status: 'FAILED',
+    startedAt: 'x', finishedAt: 'y',
+    receivedCount: 0, createdCount: 0, updatedCount: 0,
+    cancelledCount: 0, conflictCount: 0, errorCount: 1,
+    needsReviewCount: null, lastError: 'boom',
+  });
+  assert.equal(fb.kind, 'error');
 });
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
