@@ -16,7 +16,7 @@ import {
   CircleAlert,
 } from 'lucide-react';
 import type { State } from '../lib/pms';
-import ChannelsPanel from './channels-panel';
+import IcalFallbackPanel from './ical-fallback-panel';
 import {
   mapBeds24Status,
   mapBeds24Error,
@@ -1134,7 +1134,7 @@ export default function ConnectivityPanel({
           Sinkronisasi reservasi lengkap dari OTA ditangani oleh Beds24 channel manager di atas.
         </div>
       </section>
-      <ChannelsPanel state={state} demo={demo} busy={busy} save={save} />
+      <IcalFallbackPanel state={state} demo={demo} busy={busy} save={save} />
 
       {/* Initial Sync Confirmation Modal */}
       {confirmInitial && (
