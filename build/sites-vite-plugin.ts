@@ -9,7 +9,12 @@ const localUserId = "local_seedy";
 const localEmail = "seedy@sites.test";
 const localFullName = "Seedy";
 const localCookieName = "__sites_local_auth";
-const localHosts = new Set(["localhost", "127.0.0.1", "::1"]);
+const localHosts = new Set([
+  "localhost",
+  "127.0.0.1",
+  "::1",
+  "192.168.1.30",
+]);
 const localAddresses = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 const authPaths = new Set([
   "/signin-with-chatgpt",
