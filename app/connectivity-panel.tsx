@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Network,
   ShieldCheck,
@@ -11,6 +11,7 @@ import {
   Plug,
   Check,
   Info,
+  ChevronRight,
 } from 'lucide-react';
 import type { State } from '../lib/pms';
 import ChannelsPanel from './channels-panel';
@@ -18,6 +19,12 @@ import {
   mapBeds24Status,
   mapBeds24Error,
   extractSafeStatusFields,
+  extractSafeProperties,
+  extractSafeMappings,
+  buildPropertyHierarchy,
+  buildMappingViewModel,
+  suggestMapping,
+  mapMappingSaveError,
   CAPABILITIES_SUPPORTED,
   CAPABILITIES_NOT_SUPPORTED,
   PROVIDER_DISPLAY_NAME,
@@ -25,11 +32,30 @@ import {
   PROVIDER_MODE_LABEL,
   PROVIDER_READONLY_LABEL,
   type Beds24StatusViewModel,
+  type SafeProperty,
+  type SafeRoom,
+  type SafeMapping,
+  type PropertyHierarchy,
+  type UnitMappingViewModel,
 } from './connectivity-helpers';
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleString('id-ID', { timeZone: 'Asia/Makassar' });
 }
+
+type MappingStatusBadge = { label: string; tone: string };
+
+function statusBadge(s: UnitMappingViewModel['status']): MappingStatusBadge {
+  if (s === 'MAPPED') return { label: 'Terpetakan', tone: 'green' };
+  if (s === 'NEEDS_ATTENTION') return { label: 'Perlu perhatian', tone: 'amber' };
+  return { label: 'Belum dipetakan', tone: 'muted' };
+}
+
+type MappingFormState = {
+  localUnitId: string;
+  externalPropertyId: string;
+  externalUnitId: string;
+};
 
 export default function ConnectivityPanel({
   state,
@@ -47,7 +73,19 @@ export default function ConnectivityPanel({
   const [statusError, setStatusError] = useState('');
   const [testing, setTesting] = useState(false);
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
-  const [refreshTick, setRefreshTick] = useState(0);
+  const [statusTick, setStatusTick] = useState(0);
+
+  const [properties, setProperties] = useState<SafeProperty[]>([]);
+  const [rooms, setRooms] = useState<SafeRoom[]>([]);
+  const [mappings, setMappings] = useState<SafeMapping[]>([]);
+  const [inventoryLoading, setInventoryLoading] = useState(true);
+  const [inventoryError, setInventoryError] = useState('');
+  const [inventoryTick, setInventoryTick] = useState(0);
+  const [mappingForm, setMappingForm] = useState<MappingFormState | null>(null);
+  const [savingMapping, setSavingMapping] = useState(false);
+  const [mappingFeedback, setMappingFeedback] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
+
+  const formRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -76,7 +114,56 @@ export default function ConnectivityPanel({
     return () => {
       cancelled = true;
     };
-  }, [refreshTick]);
+  }, [statusTick]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setInventoryLoading(true);
+      try {
+        const [pRes, mRes] = await Promise.all([
+          fetch('/api/integrations/beds24', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'properties' }),
+          }),
+          fetch('/api/integrations/beds24', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'mappings' }),
+          }),
+        ]);
+        const pJson = (await pRes.json()) as Record<string, unknown>;
+        const mJson = (await mRes.json()) as Record<string, unknown>;
+        if (cancelled) return;
+        if (!pRes.ok) {
+          const msg = typeof pJson.error === 'string' ? pJson.error : 'Inventori tidak dapat dimuat';
+          throw new Error(msg);
+        }
+        const safe = extractSafeProperties(pJson);
+        setProperties(safe.properties);
+        setRooms(safe.rooms);
+        setMappings(extractSafeMappings(mJson));
+        setInventoryError('');
+      } catch (e) {
+        if (cancelled) return;
+        setInventoryError(mapBeds24Error(e));
+      } finally {
+        if (!cancelled) setInventoryLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [inventoryTick]);
+
+  useEffect(() => {
+    if (!mappingForm) return;
+    const t = setTimeout(() => {
+      formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 50);
+    return () => clearTimeout(t);
+  }, [mappingForm]);
 
   const onTestConnection = async () => {
     if (testing) return;
@@ -98,7 +185,7 @@ export default function ConnectivityPanel({
           'Gagal';
         setFeedback({ kind: 'error', message: mapBeds24Error(new Error(rawMsg)) });
       }
-      setRefreshTick((t) => t + 1);
+      setStatusTick((t) => t + 1);
     } catch (e) {
       setFeedback({ kind: 'error', message: mapBeds24Error(e) });
     } finally {
@@ -106,11 +193,79 @@ export default function ConnectivityPanel({
     }
   };
 
+  const onRefreshProperties = () => {
+    setMappingFeedback(null);
+    setInventoryTick((t) => t + 1);
+  };
+
+  const openMappingForm = (localUnitId: string) => {
+    const existing = mappings.find((m) => m.localUnitId === localUnitId && m.confirmed);
+    setMappingForm({
+      localUnitId,
+      externalPropertyId: existing?.externalPropertyId ?? '',
+      externalUnitId: existing?.externalUnitId ?? '',
+    });
+    setMappingFeedback(null);
+  };
+
+  const closeMappingForm = () => {
+    setMappingForm(null);
+    setMappingFeedback(null);
+  };
+
+  const onSaveMapping = async () => {
+    if (!mappingForm || savingMapping) return;
+    if (!mappingForm.externalPropertyId || !mappingForm.externalUnitId) {
+      setMappingFeedback({
+        kind: 'error',
+        message: 'Pilih properti dan kamar Beds24 terlebih dahulu.',
+      });
+      return;
+    }
+    setSavingMapping(true);
+    setMappingFeedback(null);
+    try {
+      const r = await fetch('/api/integrations/beds24', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'mapping-save',
+          payload: {
+            localUnitId: mappingForm.localUnitId,
+            externalPropertyId: mappingForm.externalPropertyId,
+            externalUnitId: mappingForm.externalUnitId,
+          },
+        }),
+      });
+      const j = (await r.json()) as Record<string, unknown>;
+      if (r.ok && j.ok === true) {
+        const unchanged = j.unchanged === true;
+        setMappingFeedback({
+          kind: 'success',
+          message: unchanged ? 'Pemetaan sudah sesuai.' : 'Pemetaan berhasil disimpan.',
+        });
+        setInventoryTick((t) => t + 1);
+      } else {
+        const rawMsg = typeof j.error === 'string' ? j.error : 'Gagal menyimpan pemetaan.';
+        const mapped = mapMappingSaveError(rawMsg);
+        setMappingFeedback({ kind: 'error', message: mapped.message });
+      }
+    } catch (e) {
+      setMappingFeedback({ kind: 'error', message: mapBeds24Error(e) });
+    } finally {
+      setSavingMapping(false);
+    }
+  };
+
+  const hierarchy: PropertyHierarchy[] = buildPropertyHierarchy(properties, rooms);
+  const localUnits = state.units.map((u) => ({ id: u.id, name: u.name }));
+  const mappingVM: UnitMappingViewModel[] = buildMappingViewModel(localUnits, hierarchy, mappings);
   const view = status ? mapBeds24Status(status.health) : null;
+  const noInventory = !inventoryLoading && !inventoryError && properties.length === 0;
 
   return (
     <>
-      {/* B. Provider Overview — Beds24 card */}
+      {/* B. Provider Overview */}
       <section className="panel">
         <div className="panel-heading">
           <h2>Channel Manager Provider</h2>
@@ -131,7 +286,7 @@ export default function ConnectivityPanel({
         </div>
       </section>
 
-      {/* C. Beds24 Status */}
+      {/* C. Status Koneksi */}
       <section className="panel">
         <div className="panel-heading">
           <h2>Status Koneksi</h2>
@@ -149,7 +304,7 @@ export default function ConnectivityPanel({
           <div className="empty">
             <AlertTriangle size={22} />
             <p>{statusError}</p>
-            <button className="secondary" onClick={() => setRefreshTick((t) => t + 1)}>
+            <button className="secondary" onClick={() => setStatusTick((t) => t + 1)}>
               Coba lagi
             </button>
           </div>
@@ -224,7 +379,7 @@ export default function ConnectivityPanel({
         )}
       </section>
 
-      {/* C2. Capabilities */}
+      {/* C2. Kapabilitas */}
       <section className="panel">
         <div className="panel-heading">
           <h2>Kapabilitas</h2>
@@ -247,13 +402,145 @@ export default function ConnectivityPanel({
       <section className="panel">
         <div className="panel-heading">
           <h2>Pemetaan Unit</h2>
-          <Link2 size={18} />
+          <div className="inline">
+            <button
+              className="secondary"
+              disabled={inventoryLoading || savingMapping}
+              onClick={onRefreshProperties}
+            >
+              <RefreshCw size={15} />
+              {inventoryLoading ? 'Memuat…' : 'Refresh Properties'}
+            </button>
+            <Link2 size={18} />
+          </div>
         </div>
-        <div className="empty">
-          <Link2 size={26} />
-          <h3>Belum ada pemetaan unit.</h3>
-          <p>Unit vila yang dipetakan ke kamar Beds24 akan tampil di sini.</p>
-        </div>
+
+        {inventoryLoading && (
+          <div className="empty">
+            <RefreshCw size={22} />
+            <p>Memuat inventori Beds24…</p>
+          </div>
+        )}
+
+        {!inventoryLoading && inventoryError && (
+          <div className="empty">
+            <AlertTriangle size={22} />
+            <p>{inventoryError}</p>
+            <button className="secondary" onClick={onRefreshProperties}>
+              Coba lagi
+            </button>
+          </div>
+        )}
+
+        {noInventory && (
+          <div className="empty">
+            <Link2 size={26} />
+            <h3>Belum ada properti Beds24 yang tersedia.</h3>
+            <p>Pastikan koneksi Beds24 aktif, lalu tekan Refresh Properties.</p>
+          </div>
+        )}
+
+        {!inventoryLoading && !inventoryError && properties.length > 0 && (
+          <>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Unit vila</th>
+                    <th>Pemetaan Beds24</th>
+                    <th>Status</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {mappingVM.map((vm) => {
+                    const badge = statusBadge(vm.status);
+                    return (
+                      <tr key={vm.localUnitId}>
+                        <td>
+                          <strong>{vm.localUnitName}</strong>
+                          <small>{vm.localUnitId}</small>
+                        </td>
+                        <td>
+                          {vm.mapping ? (
+                            <>
+                              <strong>{vm.mapping.roomName}</strong>
+                              <small>
+                                {vm.mapping.propertyName} · {vm.mapping.externalPropertyId}/
+                                {vm.mapping.externalUnitId}
+                              </small>
+                            </>
+                          ) : (
+                            <span className="text-muted">Belum dipetakan</span>
+                          )}
+                        </td>
+                        <td>
+                          <span className={`badge ${badge.tone}`}>{badge.label}</span>
+                          {vm.reason && (
+                            <small
+                              style={{ display: 'block', marginTop: 4, color: 'inherit' }}
+                            >
+                              {vm.reason}
+                            </small>
+                          )}
+                        </td>
+                        <td>
+                          <button
+                            className="text-btn"
+                            disabled={savingMapping}
+                            onClick={() => openMappingForm(vm.localUnitId)}
+                          >
+                            {vm.mapping ? 'Ubah' : 'Petakan'}
+                            <ChevronRight size={14} />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {mappingForm && (
+              <div
+                ref={formRef}
+                style={{
+                  marginTop: 16,
+                  padding: 16,
+                  border: '2px solid #0f766e',
+                  borderRadius: 8,
+                  background: '#f0fdfa',
+                  scrollMarginTop: 80,
+                }}
+              >
+                <MappingFormInline
+                  form={mappingForm}
+                  setForm={setMappingForm}
+                  hierarchy={hierarchy}
+                  localUnits={localUnits}
+                  saving={savingMapping}
+                  onSave={onSaveMapping}
+                  onCancel={closeMappingForm}
+                  feedback={mappingFeedback}
+                />
+              </div>
+            )}
+
+            {!mappingForm && mappingFeedback && (
+              <p
+                className={mappingFeedback.kind === 'success' ? 'note' : 'error'}
+                role={mappingFeedback.kind === 'success' ? 'status' : 'alert'}
+              >
+                {mappingFeedback.kind === 'success' ? (
+                  <Check size={14} />
+                ) : (
+                  <AlertTriangle size={14} />
+                )}{' '}
+                {mappingFeedback.message}
+              </p>
+            )}
+          </>
+        )}
       </section>
 
       {/* E. Sinkronisasi */}
@@ -312,5 +599,140 @@ export default function ConnectivityPanel({
       </section>
       <ChannelsPanel state={state} demo={demo} busy={busy} save={save} />
     </>
+  );
+}
+
+function MappingFormInline({
+  form,
+  setForm,
+  hierarchy,
+  localUnits,
+  saving,
+  onSave,
+  onCancel,
+  feedback,
+}: {
+  form: MappingFormState;
+  setForm: (f: MappingFormState | null) => void;
+  hierarchy: PropertyHierarchy[];
+  localUnits: { id: string; name: string }[];
+  saving: boolean;
+  onSave: () => Promise<void>;
+  onCancel: () => void;
+  feedback: { kind: 'success' | 'error'; message: string } | null;
+}) {
+  const selectedProperty = hierarchy.find((p) => p.externalId === form.externalPropertyId);
+  const selectedLocalUnit = localUnits.find((u) => u.id === form.localUnitId);
+  const suggestion = selectedLocalUnit ? suggestMapping(selectedLocalUnit, hierarchy) : null;
+
+  const setProperty = (id: string) => {
+    setForm({ ...form, externalPropertyId: id, externalUnitId: '' });
+  };
+  const setRoom = (id: string) => {
+    setForm({ ...form, externalUnitId: id });
+  };
+
+  const applySuggestion = () => {
+    if (!suggestion) return;
+    setForm({
+      ...form,
+      externalPropertyId: suggestion.externalPropertyId,
+      externalUnitId: suggestion.externalUnitId,
+    });
+  };
+
+  return (
+    <div className="settings-form">
+      <div className="panel-heading">
+        <h2>{selectedLocalUnit ? `Petakan ${selectedLocalUnit.name}` : 'Petakan unit'}</h2>
+        <button className="text-btn" onClick={onCancel} disabled={saving}>
+          Tutup
+        </button>
+      </div>
+
+      <div className="form-grid">
+        <label className="field">
+          <span>Unit vila</span>
+          <select
+            value={form.localUnitId}
+            onChange={(e) => setForm({ ...form, localUnitId: e.target.value })}
+            disabled={saving}
+          >
+            {localUnits.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name} ({u.id})
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="field">
+          <span>Properti Beds24</span>
+          <select
+            value={form.externalPropertyId}
+            onChange={(e) => setProperty(e.target.value)}
+            disabled={saving}
+          >
+            <option value="">— Pilih properti —</option>
+            {hierarchy.map((p) => (
+              <option key={p.externalId} value={p.externalId}>
+                {p.name} ({p.externalId})
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="field">
+          <span>Kamar Beds24</span>
+          <select
+            value={form.externalUnitId}
+            onChange={(e) => setRoom(e.target.value)}
+            disabled={saving || !selectedProperty}
+          >
+            <option value="">— Pilih kamar —</option>
+            {(selectedProperty?.rooms ?? []).map((r) => (
+              <option key={r.externalId} value={r.externalId}>
+                {r.name} ({r.externalId})
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {suggestion && (
+        <div className="note">
+          <Info size={14} /> Saran berdasarkan nama:{' '}
+          <strong>
+            {hierarchy.find((p) => p.externalId === suggestion.externalPropertyId)?.name} →{' '}
+            {hierarchy
+              .find((p) => p.externalId === suggestion.externalPropertyId)
+              ?.rooms.find((r) => r.externalId === suggestion.externalUnitId)?.name}
+          </strong>{' '}
+          ({Math.round(suggestion.score * 100)}% cocok){' '}
+          <button className="text-btn" onClick={applySuggestion} disabled={saving}>
+            Terapkan
+          </button>
+        </div>
+      )}
+
+      <div className="button-row">
+        <button className="primary" disabled={saving} onClick={onSave}>
+          {saving ? 'Menyimpan…' : 'Konfirmasi Pemetaan'}
+        </button>
+        <button className="secondary" disabled={saving} onClick={onCancel}>
+          Batal
+        </button>
+      </div>
+
+      {feedback && (
+        <p
+          className={feedback.kind === 'success' ? 'note' : 'error'}
+          role={feedback.kind === 'success' ? 'status' : 'alert'}
+        >
+          {feedback.kind === 'success' ? <Check size={14} /> : <AlertTriangle size={14} />}{' '}
+          {feedback.message}
+        </p>
+      )}
+    </div>
   );
 }

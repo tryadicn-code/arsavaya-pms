@@ -163,3 +163,321 @@ export const CAPABILITIES_NOT_SUPPORTED: readonly string[] = [
   'Pembuatan reservasi',
   'Konfigurasi OTA',
 ];
+
+
+// =====================================================================
+// Sub-Phase D — Property/Room Discovery + Unit Mapping
+// =====================================================================
+
+// ---------- safe inventory types ----------
+
+export type SafeProperty = {
+  externalId: string;
+  name: string;
+};
+
+export type SafeRoom = {
+  externalId: string;
+  propertyExternalId: string;
+  name: string;
+};
+
+export type SafeMapping = {
+  localUnitId: string;
+  externalPropertyId: string;
+  externalUnitId: string;
+  confirmed: boolean;
+};
+
+// ---------- whitelist extractors (raw API → safe types) ----------
+
+export function extractSafeProperties(raw: unknown): {
+  properties: SafeProperty[];
+  rooms: SafeRoom[];
+} {
+  const obj = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const rawProps = Array.isArray(obj.properties) ? obj.properties : [];
+  const rawUnits = Array.isArray(obj.units) ? obj.units : [];
+
+  const properties: SafeProperty[] = [];
+  for (const p of rawProps) {
+    if (!p || typeof p !== 'object') continue;
+    const r = p as Record<string, unknown>;
+    if (typeof r.externalId !== 'string' || r.externalId.length === 0) continue;
+    properties.push({
+      externalId: r.externalId,
+      name: typeof r.name === 'string' && r.name.length > 0 ? r.name : `Property ${r.externalId}`,
+    });
+  }
+
+  const rooms: SafeRoom[] = [];
+  for (const u of rawUnits) {
+    if (!u || typeof u !== 'object') continue;
+    const r = u as Record<string, unknown>;
+    if (typeof r.externalId !== 'string' || r.externalId.length === 0) continue;
+    if (typeof r.propertyExternalId !== 'string' || r.propertyExternalId.length === 0) continue;
+    rooms.push({
+      externalId: r.externalId,
+      propertyExternalId: r.propertyExternalId,
+      name: typeof r.name === 'string' && r.name.length > 0 ? r.name : `Room ${r.externalId}`,
+    });
+  }
+
+  return { properties, rooms };
+}
+
+export function extractSafeMappings(raw: unknown): SafeMapping[] {
+  const obj = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const arr = Array.isArray(obj.mappings) ? obj.mappings : [];
+  const out: SafeMapping[] = [];
+  for (const m of arr) {
+    if (!m || typeof m !== 'object') continue;
+    const r = m as Record<string, unknown>;
+    if (typeof r.localUnitId !== 'string' || r.localUnitId.length === 0) continue;
+    if (typeof r.externalPropertyId !== 'string' || r.externalPropertyId.length === 0) continue;
+    if (typeof r.externalUnitId !== 'string' || r.externalUnitId.length === 0) continue;
+    out.push({
+      localUnitId: r.localUnitId,
+      externalPropertyId: r.externalPropertyId,
+      externalUnitId: r.externalUnitId,
+      confirmed: r.confirmed === true || r.confirmed === 1,
+    });
+  }
+  return out;
+}
+
+// ---------- property/room hierarchy ----------
+
+export type PropertyHierarchy = {
+  externalId: string;
+  name: string;
+  rooms: { externalId: string; name: string }[];
+};
+
+export function buildPropertyHierarchy(
+  properties: readonly SafeProperty[],
+  rooms: readonly SafeRoom[],
+): PropertyHierarchy[] {
+  const roomsByProperty = new Map<string, { externalId: string; name: string }[]>();
+  for (const r of rooms) {
+    const list = roomsByProperty.get(r.propertyExternalId) ?? [];
+    list.push({ externalId: r.externalId, name: r.name });
+    roomsByProperty.set(r.propertyExternalId, list);
+  }
+  return properties.map((p) => ({
+    externalId: p.externalId,
+    name: p.name,
+    rooms: roomsByProperty.get(p.externalId) ?? [],
+  }));
+}
+
+// ---------- mapping view model ----------
+
+export type MappingStatus = 'MAPPED' | 'UNMAPPED' | 'NEEDS_ATTENTION';
+
+export type UnitMappingViewModel = {
+  localUnitId: string;
+  localUnitName: string;
+  status: MappingStatus;
+  mapping: {
+    externalPropertyId: string;
+    externalUnitId: string;
+    propertyName: string;
+    roomName: string;
+  } | null;
+  /** Human-readable reason when status is NEEDS_ATTENTION. Null otherwise. */
+  reason: string | null;
+};
+
+/**
+ * Build per-local-unit mapping status.
+ *
+ * Identity is ALWAYS ID-based:
+ *   localUnitId matches state.units[].id
+ *   externalPropertyId matches Beds24 property ID
+ *   externalUnitId matches Beds24 room ID
+ *
+ * Names are display-only.
+ */
+/**
+ * Build per-local-unit mapping status.
+ *
+ * Identity is ALWAYS ID-based:
+ *   localUnitId matches state.units[].id
+ *   externalPropertyId matches Beds24 property ID
+ *   externalUnitId matches Beds24 room ID
+ *
+ * Names are display-only.
+ *
+ * Behavior matrix:
+ *   no mapping                                    → UNMAPPED
+ *   mapping exists, confirmed === false           → NEEDS_ATTENTION ("Pemetaan belum dikonfirmasi.")
+ *   mapping confirmed, property/room not in inv.  → NEEDS_ATTENTION ("Properti atau kamar...tidak ditemukan...")
+ *   mapping confirmed, property/room in inventory → MAPPED
+ */
+export function buildMappingViewModel(
+  localUnits: readonly { id: string; name: string }[],
+  hierarchy: readonly PropertyHierarchy[],
+  mappings: readonly SafeMapping[],
+): UnitMappingViewModel[] {
+  const propById = new Map(hierarchy.map((p) => [p.externalId, p]));
+
+  // Keep latest mapping per local unit — do NOT filter by confirmed.
+  const mappingByLocal = new Map<string, SafeMapping>();
+  for (const m of mappings) {
+    mappingByLocal.set(m.localUnitId, m);
+  }
+
+  return localUnits.map((u) => {
+    const m = mappingByLocal.get(u.id);
+
+    // ---- No mapping at all ----
+    if (!m) {
+      return {
+        localUnitId: u.id,
+        localUnitName: u.name,
+        status: 'UNMAPPED',
+        mapping: null,
+        reason: null,
+      };
+    }
+
+    const prop = propById.get(m.externalPropertyId);
+    const room = prop?.rooms.find((r) => r.externalId === m.externalUnitId);
+
+    // ---- Unconfirmed mapping → NEEDS_ATTENTION, do NOT auto-confirm ----
+    if (!m.confirmed) {
+      return {
+        localUnitId: u.id,
+        localUnitName: u.name,
+        status: 'NEEDS_ATTENTION',
+        mapping: {
+          externalPropertyId: m.externalPropertyId,
+          externalUnitId: m.externalUnitId,
+          propertyName: prop?.name ?? '(tidak ditemukan di Beds24)',
+          roomName: room?.name ?? '(tidak ditemukan di Beds24)',
+        },
+        reason: 'Pemetaan belum dikonfirmasi.',
+      };
+    }
+
+    // ---- Confirmed but inventory missing ----
+    if (!prop || !room) {
+      return {
+        localUnitId: u.id,
+        localUnitName: u.name,
+        status: 'NEEDS_ATTENTION',
+        mapping: {
+          externalPropertyId: m.externalPropertyId,
+          externalUnitId: m.externalUnitId,
+          propertyName: prop?.name ?? '(tidak ditemukan di Beds24)',
+          roomName: room?.name ?? '(tidak ditemukan di Beds24)',
+        },
+        reason: 'Properti atau kamar Beds24 tidak ditemukan dalam inventori saat ini.',
+      };
+    }
+
+    // ---- Happy path ----
+    return {
+      localUnitId: u.id,
+      localUnitName: u.name,
+      status: 'MAPPED',
+      mapping: {
+        externalPropertyId: m.externalPropertyId,
+        externalUnitId: m.externalUnitId,
+        propertyName: prop.name,
+        roomName: room.name,
+      },
+      reason: null,
+    };
+  });
+}
+
+// ---------- suggestion (never auto-confirms) ----------
+
+export type MappingSuggestion = {
+  externalPropertyId: string;
+  externalUnitId: string;
+  score: number;
+};
+
+export function suggestMapping(
+  localUnit: { id: string; name: string },
+  hierarchy: readonly PropertyHierarchy[],
+): MappingSuggestion | null {
+  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const target = normalize(localUnit.name);
+  if (!target) return null;
+
+  let best: MappingSuggestion | null = null;
+  for (const p of hierarchy) {
+    for (const r of p.rooms) {
+      const rn = normalize(r.name);
+      if (!rn) continue;
+      const score =
+        rn === target ? 1 : rn.includes(target) || target.includes(rn) ? 0.7 : 0;
+      if (score > 0 && (!best || score > best.score)) {
+        best = {
+          externalPropertyId: p.externalId,
+          externalUnitId: r.externalId,
+          score,
+        };
+      }
+    }
+  }
+  return best;
+}
+
+// ---------- mapping save error mapping ----------
+
+export type MappingSaveErrorKind =
+  | 'conflict-external'
+  | 'conflict-local'
+  | 'validation'
+  | 'unknown';
+
+export function mapMappingSaveError(raw: string): {
+  kind: MappingSaveErrorKind;
+  message: string;
+} {
+  const original = (raw || '').trim();
+  const l = original.toLowerCase();
+  const safeEcho = sanitizeEcho(original);
+
+  if (l.includes('external unit') && l.includes('unit lokal lain')) {
+    return {
+      kind: 'conflict-external',
+      message: safeEcho || 'External unit sudah dipetakan ke unit lokal lain.',
+    };
+  }
+  if (l.includes('unit lokal') && l.includes('external unit lain')) {
+    return {
+      kind: 'conflict-local',
+      message: safeEcho || 'Unit lokal sudah dipetakan ke external unit lain.',
+    };
+  }
+  if (l.includes('wajib') || l.includes('invalid') || l.includes('tidak valid')) {
+    return {
+      kind: 'validation',
+      message: safeEcho || 'Data pemetaan tidak valid.',
+    };
+  }
+  return {
+    kind: 'unknown',
+    message: safeEcho || 'Gagal menyimpan pemetaan.',
+  };
+}
+
+/**
+ * Strip messages that look like they may contain a credential / token
+ * before echoing them to the UI.
+ * Returns '' when unsafe → caller falls back to a fixed safe message.
+ */
+function sanitizeEcho(msg: string): string {
+  if (!msg) return '';
+  // env-var style assignment: KEY=value
+  if (/[A-Z_][A-Z0-9_]{2,}\s*=\s*\S+/.test(msg)) return '';
+  // credential/secret patterns with a value after separator
+  if (/(token|secret|api[_-]?key|bearer|password)\s*[:=]/i.test(msg)) return '';
+  return msg;
+}
