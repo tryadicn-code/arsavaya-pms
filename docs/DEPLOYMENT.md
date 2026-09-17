@@ -73,3 +73,64 @@ npx wrangler d1 migrations list arsavaya-pms-prod --remote --config wrangler.pro
 
 # Apply
 npx wrangler d1 migrations apply arsavaya-pms-prod --remote --config wrangler.prod.jsonc
+
+---
+
+## PR-E — Production Secrets + Cloudflare Access
+
+### Zero Trust
+
+| Item | Value |
+|---|---|
+| Plan | Free |
+| Team name | `arsavaya` |
+| Team domain | `arsavaya.cloudflareaccess.com` |
+| IdP (initial) | Cloudflare Identity Provider |
+| IdP (optional future) | One-time PIN |
+
+### Access Applications
+
+**App 1 — ARSAVAYA PMS (main protected)**
+
+| Field | Value |
+|---|---|
+| Hostname | `pms.arsavaya.com` |
+| Path | `/*` |
+| Policy | Allow — `Allow initial admin` — Emails: `<admin email>` |
+| Session | 24 hours |
+| AUD Tag | `1618022799cce2eee850b87cce` |
+
+**App 2 — ARSAVAYA iCal Feed (public/token-authenticated)**
+
+| Field | Value |
+|---|---|
+| Hostname | `pms.arsavaya.com` |
+| Path | `/api/calendar/*` |
+| Policy | Bypass — `Bypass iCal feed` — Everyone |
+
+### Route Invariant (CRITICAL)
+
+| Route | Access Treatment | Auth Method |
+|---|---|---|
+| `/` | Protected by App 1 | Cloudflare Access JWT |
+| `/api/pms` | Protected by App 1 | Cloudflare Access JWT |
+| `/api/integrations/beds24` | Protected by App 1 | Cloudflare Access JWT |
+| `/api/calendar` | Protected by App 1 | Cloudflare Access JWT |
+| **`/api/calendar/<64-hex-token>`** | **Bypass by App 2** | **Token validation in app (pms_feed_keys)** |
+
+**⚠️ HARD RULE:** Jangan pernah menempatkan endpoint staff/operator di bawah `/api/calendar/<child-path>`. Namespace itu di-reserve untuk public token feed. Endpoint authenticated HARUS di path lain (mis. `/api/integrations/*`).
+
+### Required Production Secrets (NAMES only)
+
+| Secret Name | Set at Phase | Source |
+|---|---|---|
+| `CF_ACCESS_TEAM_DOMAIN` | PR-G | `arsavaya.cloudflareaccess.com` |
+| `CF_ACCESS_APP_AUD` | PR-G | `1618022799cce2eee850b87cce` (App 1 AUD) |
+| `BEDS24_READ_TOKEN` | PR-G | Production read-only token from Beds24 control panel |
+
+**Injection command (deferred to PR-G):**
+
+```powershell
+npx wrangler secret put CF_ACCESS_TEAM_DOMAIN --config wrangler.prod.jsonc
+npx wrangler secret put CF_ACCESS_APP_AUD --config wrangler.prod.jsonc
+npx wrangler secret put BEDS24_READ_TOKEN --config wrangler.prod.jsonc
