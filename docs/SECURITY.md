@@ -58,13 +58,10 @@ Verified by application using `jose`:
 
 ## Incident Response
 
-**Unauthorized access suspected:**
-1. Revoke sessions: Access → Applications → ARSAVAYA PMS → Revoke existing tokens
-2. Rotate `BEDS24_READ_TOKEN` (wrangler secret put overwrite)
-3. Review Cloudflare Access logs (Zero Trust → Logs → Access)
-4. Review Worker logs (Cloudflare dashboard → Workers → arsavaya-pms → Logs)
+```markdown
+## Incident Response
 
-**Secret leaked:**
-1. Rotate immediately: `npx wrangler secret put <NAME> --config wrangler.prod.jsonc`
-2. No redeploy needed — new version auto-deploys
-3. Audit access logs for unauthorized use
+### Secret Rotation
+
+```powershell
+npx wrangler secret put <NAME> --config wrangler.prod.jsonc

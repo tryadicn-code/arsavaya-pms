@@ -134,3 +134,30 @@ npx wrangler d1 migrations apply arsavaya-pms-prod --remote --config wrangler.pr
 npx wrangler secret put CF_ACCESS_TEAM_DOMAIN --config wrangler.prod.jsonc
 npx wrangler secret put CF_ACCESS_APP_AUD --config wrangler.prod.jsonc
 npx wrangler secret put BEDS24_READ_TOKEN --config wrangler.prod.jsonc
+
+
+---
+
+## PR-F — Observability + Release + Rollback
+
+### Observability Stack (Cloudflare-native)
+
+| Layer | Retention |
+|---|---|
+| Workers Metrics | up to 3 months |
+| Workers Logs (Free) | 3 days, 200k events/day |
+| Access Logs (Free) | 24 hours |
+| D1 sync_runs / integration_events | Application-retained |
+
+**Logpush:** SKIP — requires Workers Paid.
+
+### Alerting
+
+Deferred to PR-G — after `pms.arsavaya.com` active + real traffic.
+
+### Config Hardening
+
+`wrangler.prod.jsonc` sekarang include:
+```jsonc
+"workers_dev": false,
+"preview_urls": false

@@ -14,7 +14,8 @@
     "db:generate": "drizzle-kit generate",
     "deploy:preflight": "node scripts/deploy-preflight.mjs",
     "deploy:dry": "wrangler deploy --dry-run --config wrangler.prod.jsonc",
-    "d1:backup:prod": "node scripts/d1-backup.mjs"
+    "d1:backup:prod": "node scripts/d1-backup.mjs",
+    "deploy:prod": "node scripts/deploy-prod.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
