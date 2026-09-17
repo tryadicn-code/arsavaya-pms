@@ -27,10 +27,10 @@
       "database_id": "3d38ae89-1f7b-4343-8b28-5cda92ecdac5",
       "migrations_dir": "drizzle"
     }
-  ]
+  ],
 
-  // Custom domain — uncomment setelah DNS migration ke Cloudflare (PR-E/H)
-  // "routes": [
-  //   { "pattern": "pms.arsavaya.com", "custom_domain": true }
-  // ]
+  // PR-G: production custom domain (DNS + TLS managed by Cloudflare Workers)
+  "routes": [
+    { "pattern": "pms.arsavaya.com", "custom_domain": true }
+  ]
 }
