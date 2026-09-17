@@ -50,3 +50,26 @@
 
 npm run deploy:preflight
 
+---
+
+## PR-D — Production D1
+
+### Database
+
+| Item | Value |
+|---|---|
+| Name | `arsavaya-pms-prod` |
+| Binding | `DB` |
+| Placement | Cloudflare automatic |
+| Config | `wrangler.prod.jsonc` → `d1_databases[0]` |
+
+### Migrations
+
+Migrations tracked by Wrangler via `d1_migrations` table.
+
+```powershell
+# List
+npx wrangler d1 migrations list arsavaya-pms-prod --remote --config wrangler.prod.jsonc
+
+# Apply
+npx wrangler d1 migrations apply arsavaya-pms-prod --remote --config wrangler.prod.jsonc

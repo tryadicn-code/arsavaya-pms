@@ -22,7 +22,8 @@
     {
       "binding": "DB",
       "database_name": "arsavaya-pms-prod",
-      "database_id": "11111111-1111-4111-8111-111111111111"
+      "database_id": "3d38ae89-1f7b-4343-8b28-5cda92ecdac5",
+      "migrations_dir": "drizzle"
     }
   ]
 

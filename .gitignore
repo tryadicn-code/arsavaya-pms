@@ -103,3 +103,5 @@ tsconfig.tsbuildinfo
 .env.production.*
 wrangler.prod.local.jsonc
 *.deploy.local
+# PR-D — production D1 backups
+backups/
