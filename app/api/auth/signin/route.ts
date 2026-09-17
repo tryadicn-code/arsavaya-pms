@@ -3,7 +3,7 @@ import { env } from 'cloudflare:workers';
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
-  const raw = (env as Record<string, unknown>).ENVIRONMENT;
+  const raw = env.ENVIRONMENT;
   const environment = raw === 'development' ? 'development' : 'production';
 
   const url = new URL(req.url);

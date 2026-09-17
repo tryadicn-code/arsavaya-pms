@@ -12,7 +12,7 @@ import { ERROR_CATEGORY, IntegrationError } from '../errors.ts';
 const ENV_KEY = 'BEDS24_READ_TOKEN' as const;
 
 export function readTokenFromEnv(): string {
-  const raw = (env as unknown as Record<string, unknown>)[ENV_KEY];
+  const raw = env[ENV_KEY];
   if (typeof raw !== 'string' || raw.trim().length === 0) {
     throw new IntegrationError(
       ERROR_CATEGORY.authentication,
@@ -24,6 +24,6 @@ export function readTokenFromEnv(): string {
 }
 
 export function isConfigured(): boolean {
-  const raw = (env as unknown as Record<string, unknown>)[ENV_KEY];
+  const raw = env[ENV_KEY];
   return typeof raw === 'string' && raw.trim().length > 0;
 }

@@ -11,7 +11,7 @@ import { getJwksForTeamDomain } from './jwks.ts';
  * FAIL CLOSED: anything that is not exactly "development" is treated as production.
  */
 function readEnvironment(): Environment {
-  const raw = (env as Record<string, unknown>).ENVIRONMENT;
+  const raw = env.ENVIRONMENT;
   return raw === 'development' ? 'development' : 'production';
 }
 
@@ -33,7 +33,7 @@ export async function getApplicationContext(): Promise<ApplicationContext | null
     const jwt = requestHeaders.get('Cf-Access-Jwt-Assertion');
     if (!jwt) return null;
 
-    const envRecord = env as Record<string, unknown>;
+    const envRecord = env;
     const teamDomain = envRecord.CF_ACCESS_TEAM_DOMAIN;
     const audience = envRecord.CF_ACCESS_APP_AUD;
     if (typeof teamDomain !== 'string' || teamDomain.length === 0) return null;
