@@ -683,5 +683,142 @@ test('apply: Beds24 cancellation maps to existing local booking and does not cre
   assert.equal(r.state.bookings[0].status, 'Cancelled');
   assert.equal(r.state.bookings[0].note, 'PRESERVE');
 });
+// ===== PMS-1 guest linking (best-effort, backward compatible) =====
+test('apply: Beds24 create links guest and captures contact', () => {
+  const m = makeMapping();
+  const r = applyCanonicalReservation(
+    makeState(),
+    makeCanonical({ guestName: 'Budi Santoso', guestEmail: 'budi@arsavaya.com', guestPhone: '081234567890' }),
+    m,
+    null,
+  );
+  assert.ok(r.ok);
+  assert.equal(r.action, 'created');
+  assert.equal(r.state.guests.length, 1, 'guest record created');
+  const g = r.state.guests[0];
+  assert.equal(g.name, 'Budi Santoso');
+  assert.equal(g.email, 'budi@arsavaya.com');
+  assert.equal(g.phone, '081234567890');
+  assert.equal(r.state.bookings[0].guestId, g.id, 'booking must reference guest');
+});
+
+test('apply: Beds24 modification keeps a single stable guest', () => {
+  const m = makeMapping();
+  const r1 = applyCanonicalReservation(
+    makeState(),
+    makeCanonical({ guestName: 'Budi Santoso', guestEmail: 'budi@arsavaya.com', guestPhone: '081234567890', price: 100 }),
+    m,
+    null,
+  );
+  assert.ok(r1.ok && r1.action === 'created');
+  const gid = r1.state.bookings[0].guestId;
+  const r2 = applyCanonicalReservation(
+    r1.state,
+    makeCanonical({ guestName: 'Budi Santoso', guestEmail: 'budi@arsavaya.com', guestPhone: '081234567890', price: 200 }),
+    m,
+    r1.localEntityId,
+  );
+  assert.ok(r2.ok, 'expected ok, got ' + JSON.stringify(r2));
+  assert.equal(r2.action, 'updated');
+  assert.equal(r2.state.guests.length, 1, 'modification must not duplicate guest');
+  assert.equal(r2.state.bookings.length, 1);
+  assert.equal(r2.state.bookings[0].guestId, gid, 'guestId must stay stable');
+});
+
+test('apply: legacy state without guests still applies and bootstraps guests', () => {
+  const legacy = makeState();
+  assert.equal(legacy.guests, undefined, 'fixture must be legacy');
+  const r = applyCanonicalReservation(
+    legacy,
+    makeCanonical({ guestName: 'Citra Lestari', guestEmail: 'citra@arsavaya.com' }),
+    makeMapping(),
+    null,
+  );
+  assert.ok(r.ok);
+  assert.equal(r.action, 'created');
+  assert.ok(Array.isArray(r.state.guests), 'guests array bootstrapped');
+  assert.equal(r.state.guests.length, 1);
+});
+
+test('apply: guest-linking error never fails reservation apply', () => {
+  const orig = globalThis.crypto.randomUUID;
+  let calls = 0;
+  Object.defineProperty(globalThis.crypto, 'randomUUID', {
+    value: () => { calls += 1; if (calls >= 3) throw new Error('guest id boom'); return orig.call(globalThis.crypto); },
+    configurable: true,
+    writable: true,
+  });
+  try {
+    const r = applyCanonicalReservation(
+      makeState(),
+      makeCanonical({ guestName: 'Citra Lestari', guestEmail: 'citra@arsavaya.com' }),
+      makeMapping(),
+      null,
+    );
+    assert.ok(r.ok, 'apply must succeed even when guest linking throws');
+    assert.equal(r.action, 'created');
+    assert.equal(r.state.bookings.length, 1);
+    assert.equal(r.state.bookings[0].guestId, undefined, 'guestId left unset when linking fails');
+    assert.equal(r.state.guests, undefined, 'failed linking attempt must not touch the guest collection at all');
+  } finally {
+    Object.defineProperty(globalThis.crypto, 'randomUUID', { value: orig, configurable: true, writable: true });
+  }
+});
+
+test('apply: guest-linking failure on UPDATE leaves guest collection untouched', () => {
+  const m = makeMapping();
+  const created = applyCanonicalReservation(
+    makeState(),
+    makeCanonical({ guestName: 'Budi', guestEmail: 'budi@arsavaya.com', guestPhone: '081111111' }),
+    m,
+    null,
+  );
+  assert.ok(created.ok && created.action === 'created');
+  const gid = created.state.guests[0].id;
+  const origJson = JSON.stringify(created.state.guests);
+  const orig = globalThis.crypto.randomUUID;
+  let calls = 0;
+  Object.defineProperty(globalThis.crypto, 'randomUUID', {
+    value: () => {
+      calls += 1;
+      if (calls === 2) throw new Error('boom after candidate processing');
+      return orig.call(globalThis.crypto);
+    },
+    configurable: true,
+    writable: true,
+  });
+  try {
+    const r = applyCanonicalReservation(
+      created.state,
+      makeCanonical({ guestName: 'Budi Lain', guestEmail: 'lain@arsavaya.com' }),
+      m,
+      created.localEntityId,
+    );
+    assert.ok(r.ok, 'update must succeed even when guest linking throws');
+    assert.equal(r.action, 'updated');
+    assert.equal(r.state.bookings.length, 1, 'reservation survives');
+    assert.equal(r.state.bookings[0].guestId, gid, 'existing guestId preserved when re-linking fails');
+    assert.equal(JSON.stringify(r.state.guests), origJson, 'guest collection untouched by the failed linking attempt');
+  } finally {
+    Object.defineProperty(globalThis.crypto, 'randomUUID', { value: orig, configurable: true, writable: true });
+  }
+});
+test('apply: Beds24 cancellation preserves guest record', () => {
+  const m = makeMapping();
+  const created = applyCanonicalReservation(
+    makeState(),
+    makeCanonical({ guestName: 'Budi Santoso', guestEmail: 'budi@arsavaya.com' }),
+    m,
+    null,
+  );
+  const gid = created.state.guests[0].id;
+  const r = applyCanonicalReservation(created.state, makeCanonical({ status: 'CANCELLED' }), m, created.localEntityId);
+  assert.ok(r.ok);
+  assert.equal(r.action, 'cancelled');
+  assert.equal(r.state.bookings[0].status, 'Cancelled');
+  assert.equal(r.state.guests.length, 1, 'guest record survives cancellation');
+  assert.equal(r.state.guests[0].id, gid);
+});
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 if (failed > 0) process.exit(1);

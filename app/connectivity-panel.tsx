@@ -424,13 +424,13 @@ export default function ConnectivityPanel({
   const latestBadge = latestRun ? mapSyncRunStatus(latestRun.status) : null;
 
   return (
-    <>
+    <div className="connectivity">
       <style>{`
         .history-desktop { display: block; }
         .history-mobile { display: none; }
         .mapping-desktop { display: block; }
         .mapping-mobile { display: none; }
-        @media (max-width: 768px) {
+        @media (max-width: 700px) {
           .mapping-desktop { display: none; }
           .mapping-mobile { display: block; }
           .history-desktop { display: none; }
@@ -1172,7 +1172,7 @@ export default function ConnectivityPanel({
           </section>
         </div>
       )}
-    </>
+    </div>
   );
 }
 

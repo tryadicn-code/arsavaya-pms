@@ -3,6 +3,7 @@
  * Preserves ARSAVAYA-owned fields; only updates provider-owned fields.
  */
 import type { State, Booking } from '../../pms.ts';
+import { linkGuestTransaction } from '../../pms.ts';
 import type { CanonicalReservation } from '../types.ts';
 import type { UnitMapping } from '../unit-mapping.ts';
 
@@ -136,6 +137,8 @@ export function applyCanonicalReservation(
       date: nowIso(),
       action: `integration: update ${b.id} (Beds24 ${canonical.externalId})`,
     });
+    const guestId = linkGuestTransaction(state, canonical.guestName, canonical.guestPhone ?? undefined, canonical.guestEmail ?? undefined);
+    if (guestId) b.guestId = guestId;
     return { ok: true, action: 'updated', state, localEntityId: b.id };
   }
 
@@ -171,5 +174,7 @@ export function applyCanonicalReservation(
     date: nowIso(),
     action: `integration: create ${id} from Beds24 ${canonical.externalId}`,
   });
+  const guestId = linkGuestTransaction(state, canonical.guestName, canonical.guestPhone ?? undefined, canonical.guestEmail ?? undefined);
+  if (guestId) booking.guestId = guestId;
   return { ok: true, action: 'created', state, localEntityId: id };
 }

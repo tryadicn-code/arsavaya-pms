@@ -1,7 +1,7 @@
 import {getApplicationContext} from '../../../lib/auth';
 import {demoWorkspaceId} from '../../../lib/auth/workspace';
 import {db} from '../../../lib/storage';
-import {initial,mutate} from '../../../lib/pms';
+import {initial,mutate,ensureGuests} from '../../../lib/pms';
 import {ensureAutomation,runAutomation} from '../../../lib/automation';
 import {ensureChannels,fetchCalendar,mergeCalendar,tokenHash} from '../../../lib/channels';
 import type {ParsedEvent} from '../../../lib/channels';
@@ -20,7 +20,7 @@ export async function GET(req:Request){
  try{const ident=await identity(req);if(!ident)return response({error:'Silakan masuk untuk membuka data vila.'},401);if('error' in ident)return response({error:'Mode data contoh tidak tersedia di lingkungan produksi.'},ident.error);const key=ident.key;
  const d=db();await d.prepare('INSERT OR IGNORE INTO pms_workspace (id,version,data) VALUES (?,0,?)').bind(key,JSON.stringify(initial(key.startsWith('demo:')))).run();
  const row=await d.prepare('SELECT version,data FROM pms_workspace WHERE id=?').bind(key).first<{version:number;data:string}>();
- const state=JSON.parse(row!.data);ensureAutomation(state);ensureChannels(state);return response({version:row!.version,state});
+ const state=JSON.parse(row!.data);ensureAutomation(state);ensureChannels(state);ensureGuests(state);return response({version:row!.version,state});
  }catch(e){console.error(e);return response({error:'Data belum dapat dimuat. Coba kembali.'},503);}
 }
 export async function POST(req:Request){
@@ -43,6 +43,7 @@ export async function POST(req:Request){
   const row=await d.prepare('SELECT version,data FROM pms_workspace WHERE id=?').bind(key).first<{version:number;data:string}>();
   if(!row||(!automated&&row.version!==version))return response({error:'Data berubah di sesi lain. Muat ulang sebelum menyimpan.'},409);
   let next;try{next=runAutomation(automated?JSON.parse(row.data):mutate(JSON.parse(row.data),action,payload));}catch(e){return response({error:(e as Error).message},400)}
+ ensureGuests(next);
   const channels=ensureChannels(next);for(const pull of pulls){const conn=channels.connections.find(c=>c.id===pull.id&&c.url===pull.url&&c.enabled);if(!conn)continue;if(pull.events){mergeCalendar(next,conn.id,pull.events)}else{conn.lastAttempt=new Date().toISOString();conn.error=pull.error!;channels.history.unshift({id:crypto.randomUUID(),connection:conn.id,time:conn.lastAttempt,message:pull.error!,ok:false});channels.history=channels.history.slice(0,300);}}
   const update=d.prepare('UPDATE pms_workspace SET data=?,version=version+1 WHERE id=? AND version=?').bind(JSON.stringify(next),key,row.version);
   let changed=false;
