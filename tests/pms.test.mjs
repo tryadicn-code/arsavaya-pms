@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import {initial,mutate,today,addDays,paid,ensureGuests,linkGuest,matchGuest,normPhone,guestLabel,linkGuestTransaction} from '../lib/pms.ts';
+import {initial,mutate,today,addDays,paid,active,ensureGuests,linkGuest,matchGuest,normPhone,guestLabel,linkGuestTransaction} from '../lib/pms.ts';
+import {blocksAvailability,transitionBooking,operatorTransitions,canTransitionBookingStatus,BOOKING_STATUS_HISTORY_LIMIT} from '../lib/booking-status.ts';
+import {runAutomation} from '../lib/automation.ts';
+import {exportCalendar} from '../lib/channels.ts';
 const t=today();const booking={unit:'v1',guest:'Test Guest',start:t,end:addDays(t,2),guests:2,channel:'Langsung',total:3000000};
 let s=mutate(initial(),'booking',booking);const id=s.bookings[0].id;
 assert.throws(()=>mutate(s,'booking',booking),/sudah dipesan/);
@@ -114,4 +117,90 @@ const e2=mutate(e1,'booking',{unit:'v1',guest:'sofia tan',email:'sofia@arsavaya.
 assert.equal(e2.guests.length,1,'normalized email+name match reuses guest');
 // linkGuest defensive on legacy state
 const lg=linkGuest(legacy,'New Person','0855000');assert.ok(lg,'linkGuest works on legacy state');
+
+// ---- PMS-2: reservation status foundation ----
+function addBooking(s,over){const st=structuredClone(s);const b={id:'P2-'+Math.random().toString(36).slice(2,8).toUpperCase(),unit:'v1',guest:'Status Tamu',phone:'',start:t,end:addDays(t,2),guests:2,channel:'Langsung',status:'Confirmed',total:1000000,note:'',created:new Date().toISOString()};Object.assign(b,over||{});st.bookings.push(b);return st}
+function setStatus(s,id,status){return mutate(s,'status',{id,status})}
+const pending=addBooking(initial(),{id:'P2-PEND',status:'Pending'});
+// Pending -> Confirmed / Cancelled are the only outgoing operator transitions
+assert.equal(setStatus(pending,'P2-PEND','Confirmed').bookings[0].status,'Confirmed');
+assert.equal(setStatus(pending,'P2-PEND','Cancelled').bookings[0].status,'Cancelled');
+assert.throws(()=>setStatus(pending,'P2-PEND','Checked-in'),/tidak diperbolehkan/);
+// Pending does not block availability: an overlapping booking on the same unit still succeeds
+assert.equal(mutate(pending,'booking',{unit:'v1',guest:'Tamu Lain',start:t,end:addDays(t,2),guests:2,channel:'Langsung',total:500000}).bookings.length,2,'Pending booking does not block its unit');
+// Pending is never exported as unavailable to iCal
+let conn=mutate(initial(),'channel-add',{unit:'v1',ota:'Airbnb',listing:'P2-ICAL',mode:'api'});
+const onlyPending=addBooking(conn,{id:'P2-PEND2',status:'Pending',unit:'v1'});
+const ical=exportCalendar(onlyPending,conn.channels.connections[0].id);
+assert.ok(ical.includes('BEGIN:VCALENDAR'),'calendar export stays well-formed');
+assert.ok(!ical.includes('booking-'),'Pending booking is not exported as iCal busy');
+// availability blocking semantics (single domain helper)
+assert.equal(blocksAvailability({status:'Pending'}),false);
+assert.equal(blocksAvailability({status:'Confirmed'}),true);
+assert.equal(blocksAvailability({status:'Checked-in'}),true);
+assert.equal(blocksAvailability({status:'Checked-out'}),false);
+assert.equal(blocksAvailability({status:'Cancelled'}),false);
+assert.equal(blocksAvailability({status:'No-show'}),false);
+assert.equal(blocksAvailability({status:'Expired'}),false);
+assert.equal(blocksAvailability({status:'Hold',holdUntil:'2020-01-01T00:00:00Z'}),false,'expired Hold does not block');
+assert.equal(blocksAvailability({status:'Hold',holdUntil:'2099-01-01T00:00:00Z'}),true,'unexpired Hold blocks');
+assert.equal(blocksAvailability({status:'Hold'}),false,'Hold without holdUntil does not block');
+// Pending has no automatic expiry
+assert.equal(runAutomation(pending).bookings[0].status,'Pending','Pending never auto-expires');
+// Confirmed -> Checked-in; duplicate check-in is rejected and changes nothing
+const cin=setStatus(addBooking(initial(),{id:'P2-CIN'}),'P2-CIN','Checked-in');
+assert.equal(cin.bookings[0].status,'Checked-in');
+assert.throws(()=>setStatus(cin,'P2-CIN','Checked-in'),/tidak diperbolehkan/);
+assert.equal(cin.bookings[0].status,'Checked-in','duplicate check-in left state untouched');
+// Checked-in -> Checked-out creates exactly one housekeeping task
+const cout=setStatus(cin,'P2-CIN','Checked-out');
+assert.equal(cout.bookings[0].status,'Checked-out');
+assert.equal(cout.tasks.filter(x=>x.sourceKey==='checkout:P2-CIN').length,1);
+assert.throws(()=>setStatus(cout,'P2-CIN','Checked-out'),/tidak diperbolehkan/);
+assert.equal(cout.tasks.filter(x=>x.sourceKey==='checkout:P2-CIN').length,1,'duplicate checkout creates no extra task');
+// No-show allowed on/after arrival, rejected before arrival
+assert.equal(setStatus(addBooking(initial(),{id:'P2-NS',start:t}),'P2-NS','No-show').bookings[0].status,'No-show');
+assert.throws(()=>setStatus(addBooking(initial(),{id:'P2-NSF',start:addDays(t,5)}),'P2-NSF','No-show'),/kedatangan/);
+// statusHistory: operator transitions, newest first
+const ns=setStatus(addBooking(initial(),{id:'P2-NSH',start:t}),'P2-NSH','No-show');
+assert.equal(ns.bookings[0].statusHistory[0].source,'operator');
+assert.equal(ns.bookings[0].statusHistory[0].from,'Confirmed');
+assert.equal(ns.bookings[0].statusHistory[0].to,'No-show');
+// statusHistory: automation Hold -> Expired
+const expired=runAutomation(addBooking(initial(),{id:'P2-HOLD',status:'Hold',holdUntil:'2020-01-01T00:00:00Z'}));
+assert.equal(expired.bookings[0].status,'Expired');
+assert.equal(expired.bookings[0].statusHistory[0].source,'automation');
+assert.equal(expired.bookings[0].statusHistory[0].to,'Expired');
+// statusHistory capped at 50 entries, newest first
+const cap={status:'Hold',start:t};
+for(let i=0;i<60;i++){cap.status='Hold';assert.ok(transitionBooking(cap,'Expired','automation'));}
+assert.equal(cap.statusHistory.length,BOOKING_STATUS_HISTORY_LIMIT,'history capped at 50');
+assert.equal(cap.statusHistory[0].to,'Expired','newest entry first');
+assert.equal(cap.statusHistory[cap.statusHistory.length-1].to,'Expired');
+// status history never carries guest PII
+const pii2=setStatus(addBooking(initial(),{id:'P2-PII',guest:'NamaRahasia'}),'P2-PII','Checked-in');
+assert.ok(!JSON.stringify(pii2.bookings[0].statusHistory).includes('NamaRahasia'),'history holds no guest PII');
+// legacy booking without statusHistory still transitions and gains history on first transition
+const legacyB=addBooking(initial(),{id:'P2-LEG',status:'Confirmed'});
+delete legacyB.bookings[0].statusHistory;
+assert.ok(!('statusHistory' in legacyB.bookings[0]));
+const leg2=setStatus(legacyB,'P2-LEG','Cancelled');
+assert.equal(leg2.bookings[0].status,'Cancelled');
+assert.equal(leg2.bookings[0].statusHistory.length,1);
+// operator actions derive from the same domain table; Expired is automation-only
+assert.deepEqual(operatorTransitions('Pending'),['Confirmed','Cancelled']);
+assert.deepEqual(operatorTransitions('Confirmed'),['Checked-in','Cancelled','No-show']);
+assert.deepEqual(operatorTransitions('Checked-in'),['Checked-out']);
+assert.ok(!operatorTransitions('Hold').includes('Expired'),'UI never offers automation-only Expired');
+assert.equal(operatorTransitions('Checked-out').length,0);
+assert.equal(canTransitionBookingStatus('Bogus','Confirmed'),false);
+assert.equal(canTransitionBookingStatus('Confirmed','Bogus'),false);
+
+// occupancy / revenue helpers: Pending and No-show never count as confirmed business
+const nsStay=addBooking(initial(),{id:'P2-NS2',start:t,status:'No-show'});
+assert.equal(active(nsStay.bookings[0]),false,'No-show is not in-house / does not occupy');
+assert.equal(active(addBooking(initial(),{id:'P2-PEND3',status:'Pending'}).bookings[0]),false,'Pending does not occupy');
+assert.equal(active(addBooking(initial(),{id:'P2-HOLD2',status:'Hold',holdUntil:'2099-01-01T00:00:00Z'}).bookings[0]),true,'unexpired Hold still occupies');
+assert.equal(active(addBooking(initial(),{id:'P2-EXP2',status:'Expired'}).bookings[0]),false,'Expired does not occupy');
+
 console.log('PASS: overlap, adjacent stays, date/capacity validation, payments, refund/deposit limits, checkout housekeeping, maintenance block, hold expiry, demo isolation, historical rates, guest management.');

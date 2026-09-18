@@ -14,6 +14,7 @@ import {
 import { Beds24ListWrapper } from '../lib/integrations/beds24/types.ts';
 import { buildInitialSyncQuery, buildIncrementalSyncQuery, toUrlParams } from '../lib/integrations/beds24/query.ts';
 import { applyCanonicalReservation } from '../lib/integrations/beds24/apply.ts';
+import { exportCalendar } from '../lib/channels.ts';
 import {
   Beds24Adapter,
   buildCursor,
@@ -818,6 +819,138 @@ test('apply: Beds24 cancellation preserves guest record', () => {
   assert.equal(r.state.bookings[0].status, 'Cancelled');
   assert.equal(r.state.guests.length, 1, 'guest record survives cancellation');
   assert.equal(r.state.guests[0].id, gid);
+});
+
+
+// ---- PMS-2: provider status mapping vs local operational state ----
+const P2_TODAY = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Makassar', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+function p2Shift(d, n) { return new Date(Date.parse(d + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10); }
+const P2_ARR = P2_TODAY, P2_DEP = p2Shift(P2_TODAY, 2);
+function p2LocalBooking(over) {
+  return Object.assign({ id: 'B1', unit: 'v1', guest: 'Example Guest', phone: '', start: P2_ARR, end: P2_DEP, guests: 2, channel: 'Direct', status: 'Confirmed', total: 100, note: '', created: '2026-01-01T00:00:00Z' }, over || {});
+}
+
+test('apply: canonical PENDING creates a local Pending booking', () => {
+  const r = applyCanonicalReservation(makeState(), makeCanonical({ status: 'PENDING' }), makeMapping(), null);
+  assert.ok(r.ok);
+  assert.equal(r.state.bookings[0].status, 'Pending');
+});
+
+test('apply: Pending booking does not block its unit for other reservations', () => {
+  const pend = applyCanonicalReservation(makeState(), makeCanonical({ status: 'PENDING', arrival: P2_ARR, departure: P2_DEP }), makeMapping(), null);
+  assert.ok(pend.ok);
+  const other = applyCanonicalReservation(pend.state, makeCanonical({ status: 'CONFIRMED', arrival: P2_ARR, departure: P2_DEP, externalId: '99900001' }), makeMapping(), null);
+  assert.ok(other.ok, 'overlapping confirmed reservation accepted next to a pending one');
+  assert.equal(other.state.bookings.length, 2);
+});
+
+test('apply: provider NO_SHOW against a Confirmed booking is applied', () => {
+  const s = makeState({ bookings: [p2LocalBooking({ status: 'Confirmed' })] });
+  const r = applyCanonicalReservation(s, makeCanonical({ status: 'NO_SHOW', arrival: P2_ARR, departure: P2_DEP }), makeMapping(), 'B1');
+  assert.ok(r.ok);
+  assert.equal(r.state.bookings[0].status, 'No-show');
+  assert.equal(r.state.bookings[0].statusHistory[0].source, 'beds24');
+  assert.equal(r.state.bookings[0].statusHistory[0].to, 'No-show');
+});
+
+test('apply: provider NO_SHOW against a Checked-in booking becomes needs_review', () => {
+  const s = makeState({ bookings: [p2LocalBooking({ status: 'Checked-in' })] });
+  const r = applyCanonicalReservation(s, makeCanonical({ status: 'NO_SHOW', arrival: P2_ARR, departure: P2_DEP }), makeMapping(), 'B1');
+  assert.ok(!r.ok);
+  assert.equal(r.reason, 'needs_review');
+  assert.equal(r.state.bookings[0].status, 'Checked-in', 'local operational state preserved');
+  assert.ok(!JSON.stringify(r.detail).includes('Example Guest'), 'needs_review detail carries no guest PII');
+});
+
+test('apply: provider CANCELLED against a Confirmed booking is applied', () => {
+  const s = makeState({ bookings: [p2LocalBooking({ status: 'Confirmed' })] });
+  const r = applyCanonicalReservation(s, makeCanonical({ status: 'CANCELLED', arrival: P2_ARR, departure: P2_DEP }), makeMapping(), 'B1');
+  assert.ok(r.ok);
+  assert.equal(r.action, 'cancelled');
+  assert.equal(r.state.bookings[0].status, 'Cancelled');
+  assert.equal(r.state.bookings[0].statusHistory[0].source, 'beds24');
+});
+
+test('apply: provider CANCELLED against a Checked-in booking becomes needs_review', () => {
+  const s = makeState({ bookings: [p2LocalBooking({ status: 'Checked-in', guest: 'Budi' })] });
+  const r = applyCanonicalReservation(s, makeCanonical({ status: 'CANCELLED', arrival: P2_ARR, departure: P2_DEP }), makeMapping(), 'B1');
+  assert.ok(!r.ok);
+  assert.equal(r.reason, 'needs_review');
+  assert.equal(r.state.bookings[0].status, 'Checked-in', 'operational status not overwritten');
+  assert.equal(r.state.bookings[0].guest, 'Budi', 'no partial guest mutation');
+  assert.ok(!JSON.stringify(r.detail).includes('Budi'), 'needs_review detail carries no guest PII');
+});
+
+test('apply: Beds24 modification preserves a Checked-in booking and extends departure', () => {
+  const s = makeState({ bookings: [p2LocalBooking({ status: 'Checked-in' })] });
+  const r = applyCanonicalReservation(s, makeCanonical({ status: 'CONFIRMED', arrival: P2_ARR, departure: p2Shift(P2_TODAY, 4) }), makeMapping(), 'B1');
+  assert.ok(r.ok);
+  assert.equal(r.action, 'updated');
+  assert.equal(r.state.bookings[0].status, 'Checked-in', 'operational status preserved on provider update');
+  assert.equal(r.state.bookings[0].start, P2_ARR, 'arrival unchanged');
+  assert.equal(r.state.bookings[0].end, p2Shift(P2_TODAY, 4), 'departure extension applied');
+});
+
+
+// ---- PMS-2 final validation gate: NO_SHOW create + UNKNOWN fail-safe ----
+function p2Conn(unit) {
+  return { connections: [{ id: 'c1', unit, ota: 'Airbnb', listing: 'x', mode: 'ical', url: 'https://example.com/x.ics', enabled: true, token: 't', lastSync: null, lastAttempt: null, error: null, outbound: 'pending' }], events: [], history: [] };
+}
+
+test('apply: new provider NO_SHOW creates a local No-show booking', () => {
+  const r = applyCanonicalReservation(makeState(), makeCanonical({ status: 'NO_SHOW' }), makeMapping(), null);
+  assert.ok(r.ok, 'NO_SHOW create succeeds');
+  assert.equal(r.action, 'created');
+  assert.equal(r.state.bookings[0].status, 'No-show', 'NOT Confirmed');
+  assert.equal(r.state.bookings[0].statusHistory[0].source, 'beds24');
+  assert.equal(r.state.bookings[0].statusHistory[0].to, 'No-show');
+  assert.ok(!('from' in r.state.bookings[0].statusHistory[0]), 'initial event has no prior status');
+});
+
+test('apply: new provider NO_SHOW does not block its unit', () => {
+  const ns = applyCanonicalReservation(makeState(), makeCanonical({ status: 'NO_SHOW', arrival: P2_ARR, departure: P2_DEP }), makeMapping(), null);
+  assert.ok(ns.ok);
+  const other = applyCanonicalReservation(ns.state, makeCanonical({ status: 'CONFIRMED', arrival: P2_ARR, departure: P2_DEP, externalId: '99900002' }), makeMapping(), null);
+  assert.ok(other.ok, 'unit still free next to a provider no-show');
+  assert.equal(other.state.bookings.length, 2);
+});
+
+test('apply: new provider NO_SHOW is not exported as iCal busy', () => {
+  const r = applyCanonicalReservation(makeState({ channels: p2Conn('v1') }), makeCanonical({ status: 'NO_SHOW', arrival: P2_ARR, departure: P2_DEP }), makeMapping(), null);
+  assert.ok(r.ok);
+  const ical = exportCalendar(r.state, 'c1');
+  assert.ok(ical.includes('BEGIN:VCALENDAR'), 'calendar well-formed');
+  assert.ok(!ical.includes('booking-'), 'provider no-show not exported as unavailable');
+});
+
+test('apply: new provider UNKNOWN is needs_review and creates no booking', () => {
+  const r = applyCanonicalReservation(makeState(), makeCanonical({ status: 'UNKNOWN' }), makeMapping(), null);
+  assert.ok(!r.ok, 'UNKNOWN must not be applied');
+  assert.equal(r.reason, 'needs_review');
+  assert.equal(r.detail, 'unsupported provider reservation status');
+  assert.equal(r.state.bookings.length, 0, 'no Confirmed booking materialised');
+  assert.ok(!JSON.stringify(r.detail).includes('Example Guest'), 'detail has no guest PII');
+  assert.ok(!JSON.stringify(r.detail).includes('UNKNOWN'), 'raw provider status not echoed');
+});
+
+test('apply: provider UNKNOWN against a Checked-in booking preserves state and needs_review', () => {
+  const s = makeState({ bookings: [p2LocalBooking({ status: 'Checked-in', guest: 'Budi' })] });
+  const r = applyCanonicalReservation(s, makeCanonical({ status: 'UNKNOWN', arrival: P2_ARR, departure: P2_DEP }), makeMapping(), 'B1');
+  assert.ok(!r.ok);
+  assert.equal(r.reason, 'needs_review');
+  assert.equal(r.state.bookings[0].status, 'Checked-in', 'operational state untouched');
+  assert.equal(r.state.bookings[0].guest, 'Budi');
+  assert.equal(r.state.bookings[0].start, P2_ARR, 'dates not mutated');
+  assert.equal(r.state.bookings[0].end, P2_DEP);
+});
+
+test('apply: provider UNKNOWN against an existing Confirmed booking does not silently apply updates', () => {
+  const s = makeState({ bookings: [p2LocalBooking({ status: 'Confirmed' })] });
+  const r = applyCanonicalReservation(s, makeCanonical({ status: 'UNKNOWN', arrival: p2Shift(P2_TODAY, 1), departure: p2Shift(P2_TODAY, 5) }), makeMapping(), 'B1');
+  assert.ok(!r.ok);
+  assert.equal(r.reason, 'needs_review');
+  assert.equal(r.state.bookings[0].status, 'Confirmed');
+  assert.equal(r.state.bookings[0].start, P2_ARR, 'provider dates not applied without a decision');
 });
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
