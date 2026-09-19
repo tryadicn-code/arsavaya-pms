@@ -19,7 +19,12 @@ assert.throws(()=>mutate(s,'payment',{id,type:'deposit-return',amount:500001,met
 s=mutate(s,'status',{id,status:'Checked-in'});
 s=mutate(s,'status',{id,status:'Checked-out'});
 assert.equal(s.units[0].clean,'Perlu dibersihkan');assert.equal(s.tasks.length,1);
-s=mutate(s,'task-status',{id:s.tasks[0].id,status:'Selesai'});assert.equal(s.units[0].clean,'Siap');
+assert.throws(()=>mutate(s,'task-status',{id:s.tasks[0].id,status:'Selesai'}),/pemeriksaan/,'housekeeping must pass inspection before completion');
+ s=mutate(s,'task-status',{id:s.tasks[0].id,status:'Dikerjakan'});
+ s=mutate(s,'task-status',{id:s.tasks[0].id,status:'Menunggu pemeriksaan'});
+ assert.equal(s.units[0].clean,'Perlu dibersihkan','waiting for inspection keeps unit not ready');
+ s=mutate(s,'task-inspect',{id:s.tasks[0].id,result:'pass'});
+ assert.equal(s.tasks[0].status,'Selesai');assert.equal(s.tasks[0].completedAt.length>0,true);assert.equal(s.units[0].clean,'Siap');
 const blocked=mutate(initial(),'block',{unit:'v1',start:t,end:addDays(t,3),reason:'Perbaikan'});
 assert.throws(()=>mutate(blocked,'booking',booking),/diblokir/);
 const held=mutate(initial(),'booking',{...booking,hold:true});held.bookings[0].holdUntil='2000-01-01T00:00:00Z';
