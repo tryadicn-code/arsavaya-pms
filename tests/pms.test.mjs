@@ -163,6 +163,10 @@ assert.equal(cout.bookings[0].status,'Checked-out');
 assert.equal(cout.tasks.filter(x=>x.sourceKey==='checkout:P2-CIN').length,1);
 assert.throws(()=>setStatus(cout,'P2-CIN','Checked-out'),/tidak diperbolehkan/);
 assert.equal(cout.tasks.filter(x=>x.sourceKey==='checkout:P2-CIN').length,1,'duplicate checkout creates no extra task');
+const coutTask=cout.tasks.find(x=>x.sourceKey==='checkout:P2-CIN');
+assert.ok(!coutTask.title.includes('Status Tamu'),'checkout cleanup title must not expose guest name');
+assert.ok(coutTask.title.includes('Vila 01'),'checkout cleanup title references the unit');
+assert.equal(coutTask.bookingId,'P2-CIN','checkout cleanup keeps booking linkage');
 // No-show allowed on/after arrival, rejected before arrival
 assert.equal(setStatus(addBooking(initial(),{id:'P2-NS',start:t}),'P2-NS','No-show').bookings[0].status,'No-show');
 assert.throws(()=>setStatus(addBooking(initial(),{id:'P2-NSF',start:addDays(t,5)}),'P2-NSF','No-show'),/kedatangan/);

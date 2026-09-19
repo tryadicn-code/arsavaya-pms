@@ -5,6 +5,9 @@ import {parseCalendar,mergeCalendar,exportCalendar,externalBlocks,simulateChanne
 const now=new Date(),t=today();
 let s=mutate(initial(),'booking',{unit:'v1',guest:'Test reminder',start:addDays(t,1),end:addDays(t,3),guests:2,channel:'Langsung',total:3000000});
 s=runAutomation(s,now);assert.equal(s.automation.notices.length,2);assert.equal(s.tasks.length,1);
+assert.ok(!s.tasks[0].title.includes('Test reminder'),'arrival task title must not expose guest name');
+assert.ok(s.tasks[0].title.includes('Vila 01'),'arrival task title references the unit');
+assert.equal(s.tasks[0].bookingId,s.bookings[0].id,'arrival task keeps booking linkage');
 const twice=runAutomation(s,now);assert.equal(twice.automation.notices.length,2);assert.equal(twice.tasks.length,1);
 const id=s.bookings[0].id;s=runAutomation(mutate(s,'payment',{id,type:'payment',amount:3000000,method:'Transfer',date:t}),now);
 assert.equal(s.automation.notices.find(x=>x.rule==='paymentReminder').status,'resolved');
