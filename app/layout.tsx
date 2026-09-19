@@ -2,14 +2,15 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Vila Eight | Manajemen Properti",
+  title: "ARSAVAYA PMS | Manajemen Properti",
   description: "Reservasi dan operasional delapan vila.",
   other: {
     "codex-preview": "development",
   },
   icons: {
-    icon: "/favicon.svg",
-    shortcut: "/favicon.svg",
+    icon: "/icon.png",
+    shortcut: "/favicon.png",
+    apple: "/apple-icon.png",
   },
 };
 
