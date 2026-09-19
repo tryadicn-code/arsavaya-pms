@@ -11,7 +11,7 @@
  * reservation filters, status badges, status-history timeline, housekeeping /
  * inspection / maintenance lists and same-day turnover.
  */
-import {BOOKING_STATUSES, isBookingStatus, operatorTransitions} from './booking-status.ts';
+import {BOOKING_STATUSES, blocksAvailability, isBookingStatus, operatorTransitions} from './booking-status.ts';
 import type {BookingStatus, BookingStatusEvent} from './booking-status.ts';
 import {
   HOUSEKEEPING_KIND,
@@ -23,7 +23,10 @@ import {
   unitsMissingHousekeepingTask,
   effectiveTaskPriority,
   isArrivalPrepTask,
+  canTransitionTaskStatus,
+  TASK_STATUSES,
 } from './task-status.ts';
+import type {TaskStatus, TaskPriority} from './task-status.ts';
 
 export type OperationalBooking = {
   id: string;
@@ -265,4 +268,181 @@ export function turnoversToday<T extends OperationalBooking>(bookings: ReadonlyA
       return departure ? {unit: arrival.unit, departure, arrival} : null;
     })
     .filter((x): x is Turnover<T> => x !== null);
+}
+
+/* ------------------------------------------------------ PMS-3C presentation */
+
+const TASK_STATUS_LABELS: Record<string, string> = {
+  'Belum dikerjakan': 'Belum dikerjakan',
+  'Dikerjakan': 'Dikerjakan',
+  'Menunggu pemeriksaan': 'Menunggu pemeriksaan',
+  'Selesai': 'Selesai',
+  'Dibatalkan': 'Dibatalkan',
+};
+
+const TASK_STATUS_TONES: Record<string, StatusTone> = {
+  'Belum dikerjakan': 'amber',
+  'Dikerjakan': 'blue',
+  'Menunggu pemeriksaan': 'amber',
+  'Selesai': 'green',
+  'Dibatalkan': 'muted',
+};
+
+export function taskStatusLabel(status: string): string {
+  return TASK_STATUS_LABELS[status] || String(status || '');
+}
+
+export function taskStatusTone(status: string): StatusTone {
+  return TASK_STATUS_TONES[status] || 'muted';
+}
+
+/**
+ * Operator transitions derived from the task domain guard — the UI never
+ * re-declares the transition table. Same-status targets are excluded so only
+ * real next steps are offered.
+ */
+export function taskOperatorTransitions(kind: string, status: string): TaskStatus[] {
+  return (TASK_STATUSES as string[]).filter(
+    (to) => to !== status && canTransitionTaskStatus(kind, status, to, 'operator'),
+  ) as TaskStatus[];
+}
+
+/** UI label for a task action button. */
+export function taskActionLabel(kind: string, to: string): string {
+  if (to === 'Dikerjakan') return 'Mulai';
+  if (to === 'Menunggu pemeriksaan') return kind === MAINTENANCE_KIND ? 'Selesai diperbaiki' : 'Selesai dibersihkan';
+  if (to === 'Selesai') return 'Selesaikan';
+  return taskStatusLabel(to);
+}
+
+/**
+ * The single positive next step for a task. Housekeeping waiting for
+ * inspection has no primary action: completion only happens through
+ * inspection PASS, exposed as separate Lulus / Gagal inspeksi controls.
+ */
+export function getPrimaryTaskAction(kind: string, status: string): TaskStatus | undefined {
+  if (status === 'Belum dikerjakan') return 'Dikerjakan';
+  if (status === 'Dikerjakan') return 'Menunggu pemeriksaan';
+  if (status === 'Menunggu pemeriksaan' && kind === MAINTENANCE_KIND) return 'Selesai';
+  return undefined;
+}
+
+/* ---------------------------------------------------------- next arrival */
+
+const NEXT_ARRIVAL_EXCLUDED: string[] = ['Cancelled', 'No-show', 'Expired'];
+
+/**
+ * Nearest future arrival for a unit from real booking state. Excludes
+ * Cancelled / No-show / Expired and any stay whose arrival already passed
+ * (an in-house booking is not a next arrival). Returns only the date —
+ * arrival times are never invented.
+ */
+export function nextArrivalForUnit<T extends OperationalBooking>(
+  bookings: ReadonlyArray<T>,
+  unit: string,
+  today: string,
+): string | undefined {
+  return bookings
+    .filter((b) => b.unit === unit && !(NEXT_ARRIVAL_EXCLUDED as string[]).includes(b.status) && (b.start || '') >= today)
+    .map((b) => b.start || '')
+    .filter((d) => !!d)
+    .sort()[0];
+}
+
+/* ------------------------------------------------------------ task filters */
+
+export type TaskFilter = 'Semua' | 'Belum ditugaskan' | 'Mendesak' | 'Menunggu pemeriksaan' | 'Selesai';
+
+export const TASK_FILTERS: TaskFilter[] = ['Semua', 'Belum ditugaskan', 'Mendesak', 'Menunggu pemeriksaan', 'Selesai'];
+
+export type TaskFilterContext = {bookings: ReadonlyArray<{unit: string; status: string; start: string; end: string}>; today: string};
+
+/** Pure predicate per filter; a task may match several filters, at most once per result. */
+export function matchesTaskFilter(
+  task: {assignee?: string; status: string; unit: string; priority?: TaskPriority; sourceKey?: string},
+  filter: string,
+  ctx: TaskFilterContext,
+): boolean {
+  if (filter === 'Semua') return true;
+  if (filter === 'Belum ditugaskan') return !(task.assignee || '').trim();
+  if (filter === 'Mendesak') return effectiveTaskPriority(task, ctx.bookings, ctx.today) === 'urgent';
+  if (filter === 'Menunggu pemeriksaan') return task.status === 'Menunggu pemeriksaan';
+  if (filter === 'Selesai') return task.status === 'Selesai';
+  return false;
+}
+
+/* ------------------------------------------------------- per-unit summaries */
+
+export function openHousekeepingForUnit<T extends OperationalTask>(tasks: ReadonlyArray<T>, unit: string): T[] {
+  return tasks.filter((t) => t.unit === unit && t.kind === HOUSEKEEPING_KIND && isOpenTask(t));
+}
+
+export function openMaintenanceForUnit<T extends OperationalTask>(tasks: ReadonlyArray<T>, unit: string): T[] {
+  return tasks.filter((t) => t.unit === unit && t.kind === MAINTENANCE_KIND && isOpenTask(t));
+}
+
+/**
+ * Maintenance task linked to a failed housekeeping inspection: the issue id
+ * recorded on the latest inspection wins; the deterministic sourceKey is the
+ * fallback for legacy linkage.
+ */
+export function linkedMaintenance<T extends OperationalTask>(
+  tasks: ReadonlyArray<T>,
+  hk: {id: string; inspections?: {issueTaskId?: string}[]},
+): T | undefined {
+  const latest = Array.isArray(hk.inspections) && hk.inspections.length ? hk.inspections[0] : undefined;
+  const byIssue = latest && latest.issueTaskId ? tasks.find((t) => t.id === latest.issueTaskId) : undefined;
+  return byIssue || tasks.find((t) => t.sourceKey === 'inspection:' + hk.id + ':maintenance');
+}
+
+export type UnitOperationalSummary = {
+  /** Booking availability — occupancy only, never derived from cleaning state. */
+  occupied: boolean;
+  /** Operational readiness — cleaning state plus blocking housekeeping. */
+  ready: boolean;
+  readyLabel: string;
+  readyHint?: string;
+  housekeepingOpen: number;
+  maintenanceOpen: number;
+  nextArrival?: string;
+};
+
+/**
+ * One derived view per unit for the Unit & Harga cards. Availability and
+ * readiness intentionally come from different sources: a unit can be
+ * bookable and still need cleaning.
+ */
+export function unitOperationalSummary<T extends OperationalUnit>(
+  unit: T,
+  tasks: ReadonlyArray<OperationalTask>,
+  bookings: ReadonlyArray<OperationalBooking>,
+  today: string,
+): UnitOperationalSummary {
+  const housekeepingOpen = openHousekeepingForUnit(tasks, unit.id).length;
+  const maintenanceOpen = openMaintenanceForUnit(tasks, unit.id).length;
+  const blocking = hasOpenBlockingHousekeeping(tasks, unit.id);
+  const clean = unit.clean === 'Siap';
+  const ready = clean && !blocking;
+  let readyLabel: string;
+  let readyHint: string | undefined;
+  if (ready) {
+    readyLabel = 'Siap';
+  } else if (!clean) {
+    readyLabel = 'Perlu dibersihkan';
+  } else {
+    readyLabel = 'Belum siap';
+    readyHint = 'Housekeeping masih aktif';
+  }
+  const occupied = bookings.some(
+    (b) => b.unit === unit.id && blocksAvailability(b) && (b.start || '') <= today && (b.end || '') > today,
+  );
+  return {
+    occupied,
+    ready,
+    readyLabel,
+    ...(readyHint ? {readyHint} : {}),
+    housekeepingOpen,
+    maintenanceOpen,
+    nextArrival: nextArrivalForUnit(bookings, unit.id, today),
+  };
 }
