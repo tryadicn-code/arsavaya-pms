@@ -208,6 +208,62 @@ export async function insertIntegrationEvent(
     .run();
 }
 
+/**
+ * Idempotent persistence of one logical integration event.
+ *
+ * dedupe_key uniquely identifies a single provider event version
+ * (provider + account + externalId + externalUpdatedAt). Replaying that
+ * same event on a later sync run must never throw, never create a second
+ * row, and never inflate the sync error count.
+ *
+ *   no existing row        -> insert                (first occurrence)
+ *   same row, same outcome -> no-op                 (idempotent replay)
+ *   same row, new outcome  -> update in place       (outcome changed)
+ *
+ * The update branch matters: an unmapped reservation can first land as
+ * NEEDS_REVIEW and later become a CONFLICT or a linked booking once the
+ * operator confirms the unit mapping. Updating the existing row keeps the
+ * event ledger accurate (and keeps `localEntityId` discoverable by the
+ * next run's reconciliation) without producing duplicate rows.
+ */
+export type RecordEventOutcome = {
+  inserted: boolean;
+  updated: boolean;
+};
+
+export async function recordIntegrationEvent(
+  d1: D1Database,
+  ev: IntegrationEventRow,
+): Promise<RecordEventOutcome> {
+  const existing = await findEventByDedupe(d1, ev.dedupeKey);
+  if (!existing) {
+    await insertIntegrationEvent(d1, ev);
+    return { inserted: true, updated: false };
+  }
+  if (
+    existing.reconciliationStatus === ev.reconciliationStatus &&
+    existing.localEntityId === ev.localEntityId &&
+    existing.error === ev.error
+  ) {
+    return { inserted: false, updated: false };
+  }
+  await d1
+    .prepare(
+      'UPDATE integration_events SET reconciliation_status=?, local_entity_id=?, ' +
+        'error=?, metadata=?, received_at=? WHERE dedupe_key=?',
+    )
+    .bind(
+      ev.reconciliationStatus,
+      ev.localEntityId,
+      ev.error,
+      ev.metadata,
+      ev.receivedAt,
+      ev.dedupeKey,
+    )
+    .run();
+  return { inserted: false, updated: true };
+}
+
 export async function insertSyncRun(d1: D1Database, run: SyncRunRecord): Promise<void> {
   await d1
     .prepare(

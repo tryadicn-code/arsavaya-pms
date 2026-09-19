@@ -5,7 +5,7 @@
 import { Beds24Adapter } from './adapter.ts';
 import { applyCanonicalReservation } from './apply.ts';
 import {
-  insertIntegrationEvent,
+  recordIntegrationEvent,
   insertSyncRun,
   updateSyncRun,
   listPriorEventsByEntity,
@@ -173,7 +173,7 @@ let priorEvents: IntegrationEventRow[] = [];
       if (decision.status === 'CONFLICT') applied.conflict++;
       else applied.needsReview++;
       try {
-        await insertIntegrationEvent(
+        await recordIntegrationEvent(
           deps.db,
           eventRow(deps, canonical, entityKey, eventKey, decision.status, existing, decision.reason),
         );
@@ -188,7 +188,7 @@ let priorEvents: IntegrationEventRow[] = [];
       if (result.reason === 'conflict') {
         applied.conflict++;
         try {
-          await insertIntegrationEvent(
+          await recordIntegrationEvent(
             deps.db,
             eventRow(deps, canonical, entityKey, eventKey, 'CONFLICT', existing, result.detail),
           );
@@ -199,7 +199,7 @@ let priorEvents: IntegrationEventRow[] = [];
       }
       applied.needsReview++;
       try {
-        await insertIntegrationEvent(
+        await recordIntegrationEvent(
           deps.db,
           eventRow(
             deps,
@@ -225,13 +225,12 @@ let priorEvents: IntegrationEventRow[] = [];
 
     stateModified = true;
     try {
-      await insertIntegrationEvent(
+      await recordIntegrationEvent(
         deps.db,
         eventRow(deps, canonical, entityKey, eventKey, decision.status, result.localEntityId, undefined),
       );
     } catch (e) {
-      const msg = String(e);
-      if (!msg.includes('UNIQUE') && !msg.includes('constraint')) errors.push(msg);
+      errors.push(String(e));
     }
   }
 
